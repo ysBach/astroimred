@@ -295,14 +295,16 @@ def annul2values(
         for pos in positions:
             x, y = pos
             an_mask, sl = fast_circ_anmask(x, y, annulus.r_in, annulus.r_out)
-            sub = arr[sl]
-            if sub.size == 0:  # annulus fully outside the image
+            image_sl, mask_sl = _clip_mask_slices(sl, an_mask.shape, arr.shape)
+            if image_sl is None or mask_sl is None:  # annulus fully outside the image
                 results.append(np.array([], dtype=arr.dtype))
                 continue
+            sub = arr[image_sl]
+            an_mask = an_mask[mask_sl]
             in_an = an_mask > 0
             vals = sub[in_an]
             if base_mask is not None:
-                bm_sl = base_mask[sl][in_an]
+                bm_sl = base_mask[image_sl][in_an]
                 vals = vals[~bm_sl]
             results.append(vals)
         return results
@@ -331,14 +333,16 @@ def annul2values(
             an_mask, sl = fast_ellip_anmask(
                 x, y, annulus.a_in, b_in, annulus.a_out, annulus.b_out, theta
             )
-            sub = arr[sl]
-            if sub.size == 0:  # annulus fully outside the image
+            image_sl, mask_sl = _clip_mask_slices(sl, an_mask.shape, arr.shape)
+            if image_sl is None or mask_sl is None:  # annulus fully outside the image
                 results.append(np.array([], dtype=arr.dtype))
                 continue
+            sub = arr[image_sl]
+            an_mask = an_mask[mask_sl]
             in_an = an_mask > 0
             vals = sub[in_an]
             if base_mask is not None:
-                bm_sl = base_mask[sl][in_an]
+                bm_sl = base_mask[image_sl][in_an]
                 vals = vals[~bm_sl]
             results.append(vals)
         return results
@@ -352,6 +356,33 @@ def annul2values(
         pass
 
     return [am.get_values(arr, base_mask) for am in an_masks]
+
+
+def _clip_mask_slices(
+    image_slices: tuple[slice, slice],
+    mask_shape: tuple[int, int],
+    image_shape: tuple[int, int],
+) -> tuple[tuple[slice, slice] | None, tuple[slice, slice] | None]:
+    """Return aligned image/mask slices for a possibly off-frame bbox."""
+    yslice, xslice = image_slices
+    iymin = 0 if yslice.start is None else yslice.start
+    iymax = mask_shape[0] if yslice.stop is None else yslice.stop
+    ixmin = 0 if xslice.start is None else xslice.start
+    ixmax = mask_shape[1] if xslice.stop is None else xslice.stop
+
+    y0 = max(iymin, 0)
+    y1 = min(iymax, image_shape[0])
+    x0 = max(ixmin, 0)
+    x1 = min(ixmax, image_shape[1])
+    if y0 >= y1 or x0 >= x1:
+        return None, None
+
+    clipped_image = (slice(y0, y1), slice(x0, x1))
+    clipped_mask = (
+        slice(y0 - iymin, y1 - iymin),
+        slice(x0 - ixmin, x1 - ixmin),
+    )
+    return clipped_image, clipped_mask
 
 
 def mmm_dao(
