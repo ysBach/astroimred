@@ -1,3 +1,5 @@
+from collections.abc import Callable
+
 import numpy as np
 import pandas as pd
 from astro_ndslice import listify, slicefy
@@ -5,12 +7,12 @@ from astropy import units as u
 from astropy.nddata import CCDData
 from astropy.time import Time
 
-from astroimred._types import CCDLike, StrPathLike
-from astroimred.imops.ccdutils import CCDData_astype, imslice
-from astroimred.imops.pixels import fixpix
+from astroimred._core.types import FITSLike, StrPathLike
+from astroimred.fitsmgmt.header import cmt2hdr, hdrval, update_process, update_tlm
+from astroimred.fitsmgmt.io import _parse_image, load_ccd
+from astroimred.imutil.ccdops import CCDData_astype, imslice
+from astroimred.imutil.pixels import fixpix
 from astroimred.logging import logger
-from astroimred.mgmt.headers import cmt2hdr, hdrval, update_process, update_tlm
-from astroimred.mgmt.io import _parse_image, load_ccd
 
 from .crrej import LACOSMIC_CRREJ, crrej, medfilt_bpm
 
@@ -343,7 +345,7 @@ def frincor(
     ccd: CCDData,
     mfrin: CCDData | np.ndarray | None,
     mfrinpath: StrPathLike | None = None,
-    fringe_scale=None,
+    fringe_scale: int | float | np.ndarray | str | Callable | None = None,
     fringe_scale_region: np.ndarray | str | None = None,
     fringe_scale_kw: dict | None = None,
     exptime_key: str = "EXPTIME",
@@ -502,7 +504,7 @@ def illumcor(
 # TODO: add normalization (e.g., `normalize` = {"mean", "median", "mode",
 # "sum", "exptime", })
 def ccdred(
-    ccd: CCDLike | np.ndarray | StrPathLike,
+    ccd: FITSLike,
     output: StrPathLike | None = None,
     extension: int | str | None = None,
     trimsec: str | None = None,
@@ -515,7 +517,7 @@ def ccdred(
     mflat: CCDData | None = None,
     mfrin: CCDData | None = None,
     fringe_flat_fielded: bool = True,
-    fringe_scale=None,
+    fringe_scale: int | float | np.ndarray | str | Callable | None = None,
     fringe_scale_region: str | None = None,
     fringe_scale_kw: dict | None = None,
     gain: float | u.Unit = 1,

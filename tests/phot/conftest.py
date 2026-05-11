@@ -159,7 +159,7 @@ def gaussian_params_offset():
 
 
 # =============================================================================
-# CCDData objects with headers
+# CCDData objects with header
 # =============================================================================
 @pytest.fixture
 def ccd_uniform():

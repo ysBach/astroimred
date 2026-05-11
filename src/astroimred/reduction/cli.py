@@ -9,11 +9,10 @@ from pathlib import Path
 import click
 import numpy as np
 
+from astroimred.imutil.imarith import imarith
+from astroimred.imutil.imcombine import imcombine
+from astroimred.imutil.imcopy import imcopy
 from astroimred.logging import enable_console_logging
-
-from .imutil.imarith import imarith
-from .imutil.imcombine import imcombine
-from .imutil.imcopy import imcopy
 
 CONTEXT_SETTINGS = {"help_option_names": ["-h", "--help"]}
 

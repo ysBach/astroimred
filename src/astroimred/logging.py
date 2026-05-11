@@ -8,14 +8,16 @@ logger = logging.getLogger("astroimred")
 logger.addHandler(logging.NullHandler())
 
 
-def set_log_level(level):
+def set_log_level(level: int | str) -> None:
     """Set the log level for astroimred."""
     if isinstance(level, str):
         level = getattr(logging, level.upper())
     logger.setLevel(level)
 
 
-def enable_console_logging(level=logging.INFO, format=None):
+def enable_console_logging(
+    level: int | str = logging.INFO, format: str | None = None
+) -> None:
     """Enable console logging for interactive use."""
     if format is None:
         format = "[%(levelname)s] %(message)s"

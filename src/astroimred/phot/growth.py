@@ -73,7 +73,17 @@ def _profile_exp_i(r, flux, r0=1):
     return flux * (1 - (1 + r / r0) * np.exp(-r / r0))
 
 
-def profile(r, airmass, a, b, c, width=1, power=1, sigma=1, r0=1):
+def profile(
+    r: float | np.ndarray,
+    airmass: float | np.ndarray,
+    a: float,
+    b: float,
+    c: float,
+    width: float = 1,
+    power: float = 1,
+    sigma: float = 1,
+    r0: float = 1,
+) -> float | np.ndarray:
     """The azimuthally averaged DAOGROW stellar profile.
 
     Parameters
@@ -104,7 +114,18 @@ def profile(r, airmass, a, b, c, width=1, power=1, sigma=1, r0=1):
     return fraction * moffat_i + (1 - fraction) * (c * gauss_i + (1 - c) * exp_i)
 
 
-def dmag(r1, r2, airmass, a, b, c, width=1, power=1, sigma=1, r0=1):
+def dmag(
+    r1: float | np.ndarray,
+    r2: float | np.ndarray,
+    airmass: float | np.ndarray,
+    a: float,
+    b: float,
+    c: float,
+    width: float = 1,
+    power: float = 1,
+    sigma: float = 1,
+    r0: float = 1,
+) -> float | np.ndarray:
     """delta magnitude between two radii for the DAOGROW stellar profile.
 
     Parameters

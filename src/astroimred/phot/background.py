@@ -1,5 +1,4 @@
 from collections.abc import Callable
-from typing import Any
 
 import numpy as np
 from astropy.nddata import CCDData
@@ -17,7 +16,7 @@ def quick_sky_circ(
     r_in: float = 10,
     r_out: float = 20,
     mask: np.ndarray | None = None,
-    **kwargs: Any,
+    **kwargs,
 ) -> Table:
     """Estimate sky with crude presets.
 
@@ -51,12 +50,12 @@ def sky_fit(
     ccd: CCDData | np.ndarray,
     annulus=None,
     mask: np.ndarray | None = None,
-    method: str | Callable = "sex",
-    sky_clipper: Callable | None = sigma_clipper,
+    method: str | Callable[[np.ndarray, float], float] = "sex",
+    sky_clipper: Callable[..., np.ndarray] | None = sigma_clipper,
     std_ddof: int = 1,
     to_table: bool = True,
     return_skyarr: bool = False,
-    **kwargs: Any,
+    **kwargs,
 ) -> Table | tuple[Table, np.ndarray]:
     """Estimate the sky value from image and annulus.
 

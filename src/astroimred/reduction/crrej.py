@@ -9,12 +9,14 @@ from astropy.stats import sigma_clipped_stats
 from astropy.time import Time
 from astroscrappy import detect_cosmics
 
-from astroimred._types import FQArr, StrPathLike
-from astroimred.imops.ccdutils import propagate_ccdmask
+from astroimred._core.types import FQArr, StrPathLike
+from astroimred._core.units import as_quantity
+from astroimred.fitsmgmt.header import cmt2hdr, update_process, update_tlm
+from astroimred.fitsmgmt.io import _parse_image
+from astroimred.imutil.ccdops import propagate_ccdmask
 from astroimred.logging import logger
-from astroimred.mgmt.headers import cmt2hdr, update_process, update_tlm
-from astroimred.mgmt.io import _parse_image
-from astroimred.mgmt.misc import change_to_quantity
+
+from ._presets import LACOSMIC_CRREJ, LACOSMIC_KEYS
 
 __all__ = [
     "ASTROSCRAPPY_DIVFACTOR",
@@ -24,43 +26,6 @@ __all__ = [
     "crrej",
     "medfilt_bpm",
 ]
-
-
-# I skipped two params in IRAF LACOSMIC: gain=2.0, readnoise=6.
-LACOSMIC_KEYS = {
-    "sigclip": 4.5,
-    "sigfrac": 0.5,
-    "objlim": 1.0,
-    "satlevel": np.inf,
-    "invar": None,
-    "inbkg": None,
-    "niter": 4,
-    "sepmed": False,
-    "cleantype": "medmask",
-    "fsmode": "median",
-    "psfmodel": "gauss",
-    "psffwhm": 2.5,
-    "psfsize": 7,
-    "psfk": None,
-    "psfbeta": 4.765,
-}
-
-# same as above, but simplify `fsmode`, `psfmodel`, and `psfk` into `fs`
-LACOSMIC_CRREJ = {
-    "sigclip": 4.5,
-    "sigfrac": 0.5,
-    "objlim": 1.0,
-    "satlevel": np.inf,
-    "invar": None,
-    "inbkg": None,
-    "niter": 4,
-    "sepmed": False,
-    "cleantype": "medmask",
-    "fs": "median",
-    "psffwhm": 2.5,
-    "psfsize": 7,
-    "psfbeta": 4.765,
-}
 
 
 ASTROSCRAPPY_DIVFACTOR = detect_cosmics(np.ones((3, 3)), gain=1.0, niter=0)[1][0, 0]
@@ -446,8 +411,8 @@ def crrej(
         inmask = propagate_ccdmask(_ccd, additional_mask=inmask)
 
     # The L.A. Cosmic accepts only the gain in e/adu and rdnoise in e.
-    gain = change_to_quantity(gain, u.electron / u.adu, to_value=True)
-    rdnoise = change_to_quantity(rdnoise, u.electron, to_value=True)
+    gain = as_quantity(gain, u.electron / u.adu, to_value=True)
+    rdnoise = as_quantity(rdnoise, u.electron, to_value=True)
 
     inbkg = None if inbkg is None else _parse_image(inbkg)[0]
     invar = None if invar is None else _parse_image(invar)[0]
@@ -734,8 +699,8 @@ def medfilt_bpm(
 
     if std_model == "ccd":
         _t = Time.now()
-        gain = change_to_quantity(gain, u.electron / u.adu, to_value=True)
-        rdnoise = change_to_quantity(rdnoise, u.electron, to_value=True)
+        gain = as_quantity(gain, u.electron / u.adu, to_value=True)
+        rdnoise = as_quantity(rdnoise, u.electron, to_value=True)
 
         std = np.sqrt((1 + snoise) * med_filt / gain + (rdnoise / gain) ** 2)
         if update_header:

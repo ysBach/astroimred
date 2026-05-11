@@ -9,16 +9,18 @@ from astropy.io import fits
 
 # Import astroimred
 try:
-    from astroimred import ccdutils, headers, io, mathutils, misc, paths, summary
+    from astroimred import ccdops, geometry, header, io, numeric, system, table
     from astroimred import logging as airlogging
+    from astroimred._core import time, units
 except ImportError:
     # Use direct path if package not installed in env yet
     import sys
 
     sys.path.insert(0, os.path.abspath("src"))
 
-    from astroimred import ccdutils, headers, io, mathutils, misc, paths, summary
+    from astroimred import ccdops, geometry, header, io, numeric, system, table
     from astroimred import logging as airlogging
+    from astroimred._core import time, units
 
 logger = airlogging.logger
 
@@ -45,22 +47,22 @@ def run_tests():
         logger.info("--- Testing Utils ---")
 
         # listify
-        assert misc.listify(1) == [1]
-        assert misc.listify([1, 2]) == [1, 2]
-        assert misc.listify("abc") == ["abc"]
+        assert geometry.listify(1) == [1]
+        assert geometry.listify([1, 2]) == [1, 2]
+        assert geometry.listify("abc") == ["abc"]
 
         # str_now
-        assert len(misc.str_now()) > 0
+        assert len(time.str_now()) > 0
 
-        # change_to_quantity
-        q1 = misc.change_to_quantity(10, "km")
+        # as_quantity
+        q1 = units.as_quantity(10, "km")
         assert q1.value == 10.0 and q1.unit == u.km
-        q2 = misc.change_to_quantity(10 * u.m, "km")
+        q2 = units.as_quantity(10 * u.m, "km")
         assert q2.value == 0.01 and q2.unit == u.km
 
         # binning
         arr = np.arange(16).reshape(4, 4)
-        binned = mathutils.binning(arr, factors=(2, 2))
+        binned = numeric.binning(arr, factors=(2, 2))
         expected_bin = np.array([[2.5, 4.5], [10.5, 12.5]])
         assert np.allclose(binned, expected_bin)
 
@@ -69,15 +71,15 @@ def run_tests():
         hdr["NAXIS"] = 2
 
         # cmt2hdr
-        headers.cmt2hdr(hdr, "h", "Test history")
+        header.cmt2hdr(hdr, "h", "Test history")
         assert "Test history" in str(hdr.get("HISTORY"))
 
         # update_process
-        headers.update_process(hdr, "BiasSub")
+        header.update_process(hdr, "BiasSub")
         assert "BiasSub" in str(hdr.get("PROCESS"))
 
         # update_tlm
-        headers.update_tlm(hdr)
+        header.update_tlm(hdr)
         assert "FITS-TLM" in hdr
 
         # ==========================================
@@ -101,32 +103,32 @@ def run_tests():
         assert [Path(p).name for p in inputs] == ["test.fits"]
 
         # imslice
-        sl_ccd = ccdutils.imslice(ccd, "[2:5, 2:5]")
+        sl_ccd = ccdops.imslice(ccd, "[2:5, 2:5]")
         assert sl_ccd.shape == (4, 4)
 
         # cut_ccd
         # cut_ccd returns (nccd, cutout)
-        cut, _ = ccdutils.cut_ccd(ccd, (5, 5), (4, 4))
+        cut, _ = ccdops.cut_ccd(ccd, (5, 5), (4, 4))
         assert cut.shape == (4, 4)
 
         # bin_ccd
-        binccd = ccdutils.bin_ccd(ccd, factors=(2, 2))
+        binccd = ccdops.bin_ccd(ccd, factors=(2, 2))
         assert binccd.shape == (5, 5)
         assert "XBINNING" in binccd.header
         assert "YBINNING" in binccd.header
 
         # hedit
-        headers.hedit(fpath, "OBJECT", "TestObj", overwrite=True, add=True)
+        header.hedit(fpath, "OBJECT", "TestObj", overwrite=True, add=True)
         assert fits.getval(fpath, "OBJECT") == "TestObj"
 
         # key_remover
         h2 = hdr.copy()
         h2["TEMP"] = 123
-        h2 = headers.key_remover(h2, ["TEMP"])
+        h2 = header.key_remover(h2, ["TEMP"])
         assert "TEMP" not in h2
 
         # set_ccd_attribute
-        ccdutils.set_ccd_attribute(ccd, "gain", 2.0, unit="electron/adu")
+        ccdops.set_ccd_attribute(ccd, "gain", 2.0, unit="electron/adu")
         assert ccd.gain.value == 2.0
         assert ccd.gain.unit == u.electron / u.adu
 
@@ -142,11 +144,11 @@ def run_tests():
 
         # mkdir
         dpath = tmpdir / "subdir"
-        paths.mkdir(dpath)
+        system.mkdir(dpath)
         assert dpath.exists()
 
         # fits_summary
-        df = summary.fits_summary([fpath, outpath], keywords=["OBJECT", "NAXIS"])
+        df = table.fits_summary([fpath, outpath], keywords=["OBJECT", "NAXIS"])
         df = df.sort_values("file").reset_index(drop=True)
         # out.fits is first (alphabetical o before t? No, fpath=test.fits,
         # outpath=out.fits)
@@ -169,7 +171,7 @@ def run_tests():
         # df sorted: out.fits (idx 0), test.fits (idx 1).
 
         # Actually verify content carefully.
-        # summary table logic loads from disk.
+        # table table logic loads from disk.
         # So df[0] (out.fits) -> OBJECT=None (or whatever default)
         # df[1] (test.fits) -> OBJECT=TestObj
 

@@ -2,18 +2,18 @@ import numpy as np
 from astropy.io import fits
 from astropy.nddata import CCDData
 
-import astroimred.reduction as imred
+from astroimred.imutil.imarith import imarith
 
 
 class TestImarith:
-    """Tests for `~imred.imarith`."""
+    """Tests for `~astroimred.imutil.imarith.imarith`."""
 
     def test_header_params_and_replace_are_preserved(self):
         data = np.array([[1.0, np.nan], [3.0, np.inf]])
         ccd = CCDData(data, unit="adu")
         ccd.header["OBJECT"] = "raw"
 
-        result = imred.imarith(
+        result = imarith(
             ccd,
             "+",
             1,
@@ -35,7 +35,7 @@ class TestImarith:
             [fits.PrimaryHDU(), fits.ImageHDU(data=data, header=header, name="SCI")]
         ).writeto(path)
 
-        result = imred.imarith(path, "+", 1, verbose=False)
+        result = imarith(path, "+", 1, verbose=False)
 
         np.testing.assert_allclose(result.data, data + 1)
         assert result.header["OBJECT"] == "science"
@@ -53,7 +53,7 @@ class TestImarith:
             ]
         ).writeto(path)
 
-        imred.imarith(path, "+", 1, output=output, overwrite=True, verbose=False)
+        imarith(path, "+", 1, output=output, overwrite=True, verbose=False)
 
         with fits.open(output) as hdul:
             hdul.verify("exception")

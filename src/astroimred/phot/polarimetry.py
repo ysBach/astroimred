@@ -481,7 +481,17 @@ def correct_pa(
     return q_inst, u_inst, dq_inst, du_inst
 
 
-def calc_pol(q, u, dq=0, du=0, in_pct=False, out_pct=False, out_deg=False):
+def calc_pol(
+    q: float | np.ndarray,
+    u: float | np.ndarray,
+    dq: float | np.ndarray = 0,
+    du: float | np.ndarray = 0,
+    in_pct: bool = False,
+    out_pct: bool = False,
+    out_deg: bool = False,
+) -> tuple[
+    float | np.ndarray, float | np.ndarray, float | np.ndarray, float | np.ndarray
+]:
     """Calculate the polarization degree and error.
 
     Parameters
@@ -525,17 +535,19 @@ def calc_pol(q, u, dq=0, du=0, in_pct=False, out_pct=False, out_deg=False):
 
 
 def calc_pol_r(
-    pol,
-    thp,
-    dpol=0,
-    dthp=0,
-    suntargetpa=0,
-    dsuntargetpa=0,
-    in_pct=False,
-    in_deg=False,
-    out_pct=False,
-    out_deg=False,
-):
+    pol: float | np.ndarray,
+    thp: float | np.ndarray,
+    dpol: float | np.ndarray = 0,
+    dthp: float | np.ndarray = 0,
+    suntargetpa: float | np.ndarray = 0,
+    dsuntargetpa: float | np.ndarray = 0,
+    in_pct: bool = False,
+    in_deg: bool = False,
+    out_pct: bool = False,
+    out_deg: bool = False,
+) -> tuple[
+    float | np.ndarray, float | np.ndarray, float | np.ndarray, float | np.ndarray
+]:
     """Calculate the "proper" polarization degree and error (following B.
     Lyot's definition).
 
@@ -891,7 +903,12 @@ class LinPolOE4(PolObjMixin):
             self.dtheta = np.rad2deg(self.dtheta)
 
 
-def proper_pol(pol, theta, psang, degree=True):
+def proper_pol(
+    pol: float | np.ndarray,
+    theta: float | np.ndarray,
+    psang: float | np.ndarray,
+    degree: bool = True,
+) -> tuple[float | np.ndarray, float | np.ndarray]:
     if not degree:
         theta = np.rad2deg(theta)
         psang = np.rad2deg(psang)

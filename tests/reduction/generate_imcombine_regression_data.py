@@ -18,18 +18,11 @@ from pathlib import Path
 
 import numpy as np
 
-# Import after path is set if needed
-try:
-    import astroimred.reduction as imred
-except ImportError:
-    import sys
+from astroimred.imutil.imcombine import ndcombine
 
-    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
-    import astroimred.reduction as imred
+imred_uc = import_module("astroimred.imutil._util_comb")
+imred_ur = import_module("astroimred.imutil._util_rej")
 
-imred_uc = import_module("astroimred.reduction.imutil.util_comb")
-imred_ur = import_module("astroimred.reduction.imutil.util_reject")
-ndcombine = imred.ndcombine
 _get_dtype_limits = imred_uc._get_dtype_limits
 _set_cenfunc = imred_uc._set_cenfunc
 _set_combfunc = imred_uc._set_combfunc

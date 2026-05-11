@@ -1240,6 +1240,7 @@ def find_centroid(
     if total > max_shift:
         logger.warning(
             f"Object with initial position ({xc_iter[-1]}, {yc_iter[-1]}) "
+            f"shifted larger than allowed: "
             f"(shift = {total:.2f}) > (allowed {max_shift = })."
         )
 

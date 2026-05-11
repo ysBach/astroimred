@@ -1,7 +1,10 @@
-import contextlib
-from collections.abc import Sequence
+"""
+Archaic utilities before I developed imcombine.py.
+This was a thin wrapper around ccdproc.combine.
+"""
+
+from collections.abc import Callable, Sequence
 from pathlib import Path
-from typing import Any
 
 import ccdproc
 import numpy as np
@@ -13,25 +16,19 @@ from astropy.table import Table
 from astropy.time import Time
 from ccdproc import combine
 
-from astroimred._types import HDUExt, StrPathLike
-from astroimred.imops.ccdutils import CCDData_astype, imslice
+from astroimred._core.numeric import sstd, weighted_avg
+from astroimred._core.types import HDUExt, StrPathLike
+from astroimred.fitsmgmt.header import cmt2hdr
+from astroimred.fitsmgmt.io import _parse_extension, load_ccd
+from astroimred.fitsmgmt.table import SummaryInput, fits_summary, select_fits
+from astroimred.imutil.ccdops import CCDData_astype, imslice
 from astroimred.logging import logger
-from astroimred.mgmt.headers import chk_keyval, cmt2hdr
-from astroimred.mgmt.io import _parse_extension, inputs2list, load_ccd
-from astroimred.mgmt.summary import fits_summary
 
 __all__ = [
     "sstd",
     "weighted_mean",
-    "group_fits",
-    "select_fits",
     "combine_ccd",
 ]
-
-
-def sstd(a: np.ndarray, **kwargs: Any) -> np.ndarray:
-    """Return the sample standard deviation."""
-    return np.std(a, ddof=1, **kwargs)
 
 
 # FIXME: Add this to Ccdproc esp. for mem_limit
@@ -56,375 +53,20 @@ def weighted_mean(
         Weighted mean image with propagated standard-deviation uncertainty.
     """
     datas = []
-    ws = []  # weights = 1 / sigma**2
+    errs = []
     for ccd in ccds:
+        if ccd.uncertainty is None:
+            raise ValueError("All CCDs must have uncertainty arrays.")
         datas.append(ccd.data)
-        ws.append(1 / ccd.uncertainty.array**2)
-    wmean = np.average(np.array(datas), axis=0, weights=ws)
-    wuncert = np.sqrt(1 / np.sum(np.array(ws), axis=0))
+        errs.append(ccd.uncertainty.array)
+    wmean, wuncert = weighted_avg(np.array(datas), np.array(errs), axis=0)
     nccd = CCDData(data=wmean, header=ccds[0].header, unit=unit)
     nccd.uncertainty = StdDevUncertainty(wuncert)
     return nccd
 
 
-def group_fits(
-    summary_table: pd.DataFrame | Table,
-    type_key: str | list[str] | None = None,
-    type_val: Any = None,
-    group_key: str | list[str] | None = None,
-    table_filecol: str = "file",
-    verbose: bool = False,
-) -> tuple[pd.core.groupby.DataFrameGroupBy, list[str]]:
-    """Organize the group_by and type_key for select_fits
-
-    Parameters
-    ----------
-    summary_table: `~pandas.DataFrame` or `~astropy.table.Table`
-        The table which contains the metadata (header) of files. If it is in
-        the astropy table format, it will be converted to `~pandas.DataFrame`
-        object.
-
-    type_key, type_val: `None`, `str`, `list` of `str`, optional
-        The header keyword for the ccd type, and the value you want to match.
-
-    group_key : `None`, `str`, `list` of `str`, optional
-        The header keyword which will be used to make groups for the CCDs that
-        have selected from `type_key` and `type_val`. If `None` (default), no
-        grouping will occur, but it will return the `~pandas.DataFrameGroupBy`
-        object will be returned for the sake of consistency.
-        Default: `None`.
-
-    Returns
-    -------
-    grouped : `~pandas.DataFrameGroupBy`
-        The table after the grouping process.
-
-    group_type_key : `list` of `str`
-        The `type_key` that can directly be used for `select_fits` for each
-        element of `grouped.groups`. Basically this is ``type_key +
-        group_key``.
-
-    Examples
-    --------
-
-    >>> allfits = list(Path('.').glob("*.fits"))
-    >>> import astroimred as air
-    >>> summary_table = fm.fits_summary(allfits)
-    >>> type_key = ["OBJECT"]
-    >>> type_val = ["dark"]
-    >>> group_key = ["EXPTIME"]
-    >>> gs, g_key = group_fits(summary_table,
-    ...                        type_key,
-    ...                        type_val,
-    ...                        group_key)
-    >>> for g_val, group in gs:
-    >>>     _ = combine_ccd(group["file"],
-    ...                     type_key=g_key,
-    ...                     type_val=g_val)
-    """
-    if isinstance(summary_table, Table):
-        st = summary_table.copy().to_pandas()
-    elif isinstance(summary_table, pd.DataFrame):
-        st = summary_table.copy()
-    else:
-        raise TypeError(
-            "summary_table must be an astropy Table or Pandas DataFrame. "
-            + f"It's now {type(summary_table)}."
-        )
-
-    type_key, type_val, group_key = chk_keyval(
-        type_key=type_key, type_val=type_val, group_key=group_key
-    )
-
-    if len(group_key + type_key) == 0:
-        raise ValueError("At least one of type_key and group_key should not be empty!")
-
-    # For simplicity, crop the original data by type_key and type_val first.
-    if type_key and type_val:  # if not empty list
-        fpaths = select_fits(
-            st,
-            table_filecol=table_filecol,
-            prefer_ccddata=False,
-            type_key=type_key,
-            type_val=type_val,
-            verbose=verbose,
-            path_to_text=True,
-        )
-        st = st[st[table_filecol].isin(fpaths)]
-    group_type_key = type_key + group_key
-    grouped = st.groupby(group_key)
-
-    return grouped, group_type_key
-
-
-def select_fits(
-    inputs: Any,
-    extension: HDUExt = None,
-    unit: str | u.Unit | None = None,
-    trimsec: str | None = None,
-    table_filecol: str = "file",
-    prefer_ccddata: bool = False,
-    type_key: str | list[str] | None = None,
-    type_val: Any = None,
-    path_to_text: bool = False,
-    verbose: bool = True,
-) -> list[Path] | list[CCDData]:
-    """Stacks the FITS files specified in fitslist
-
-    Parameters
-    ----------
-    inputs : path-like, `~astropy.nddata.CCDData`, `~astropy.io.fits.PrimaryHDU`, `~astropy.io.fits.ImageHDU`, `~pandas.DataFrame` or `~astropy.table.Table`
-        If it is path-like, it must contain FITS files to extract header. If
-        CCD-like, the header information will be used for selecting elements to
-        select.
-
-    extension : `int`, `str`, (`str`, `int`), optional.
-        The extension of FITS to be used. It can be given as integer
-        (0-indexing) of the extension, ``EXTNAME`` (single `str`), or a `tuple` of
-        `str` and `int`: ``(EXTNAME, EXTVER)``. If `None` (default), the *first
-        extension with data* will be used.
-        Ignored if `inputs` is table-like.
-        Default: `None`.
-
-    unit: `~astropy.units.Unit` or `str`, optional
-        The unit of the CCDs to be loaded.
-        Used only when `fitslist` is not a `list` of `~astropy.nddata.CCDData`
-        and `prefer_ccddata` is `True`.
-        Ignored if `inputs` is table-like.
-        Default: `None`.
-
-    trimsec : `str`, [`list` of] `int`, [`list` of] slice, optional
-        Section of the data to be extracted by `~astroimred.imops.ccdutils.imslice`.
-        Default is `None`.
-        Ignored if `inputs` is table-like.
-
-    table_filecol : `str`, optional.
-        The column name of the `summary_table` which contains the path to the
-        FITS files. Ignored if `inputs` is CCD-like.
-        Default: ``'file'``.
-
-    prefer_ccddata: `bool`, optional
-        Whether to prefer to return `~astropy.nddata.CCDData` objects if possible. If `True`,
-        path-like, `~numpy.ndarray`, or table-like input will return a `list` of `~astropy.nddata.CCDData`.
-        If `False` (default), only the paths will be returned unless the
-        `inputs` is consist of `~astropy.nddata.CCDData.` Ignored if `inputs` is already
-        CCD-like.
-
-    type_key, type_val: `str`, `list` of `str`
-        The header keyword for the ccd type, and the value you want to match.
-        Default: `False`.
-
-    Returns
-    -------
-    matched: `list` of `~pathlib.Path` or `list` of `~astropy.nddata.CCDData`
-        `list` containing `~pathlib.Path` to files if `prefer_ccddata` is `False`. Otherwise
-        it is a `list` containing loaded `~astropy.nddata.CCDData` after loading the files. If
-        `ccdlist` is given a priori, `list` of `~astropy.nddata.CCDData` will be returned
-        regardless of `prefer_ccddata`.
-    """
-
-    def _parse_val(value):
-        val = str(value)
-        if val.lstrip("+-").isdigit():  # if int
-            result = int(val)
-        else:
-            try:
-                result = float(val)
-            except ValueError:
-                result = str(val)
-        return result
-
-    def _check_mismatch(row, keys, values):
-        mismatch = False
-        for k, v in zip(keys, values, strict=False):
-            hdr_val = _parse_val(row[k])
-            parse_v = _parse_val(v)
-            if hdr_val != parse_v:
-                mismatch = True
-                break
-        return mismatch
-
-    # Check for type_key and type_val
-    type_key, type_val, _ = chk_keyval(
-        type_key=type_key, type_val=type_val, group_key=None
-    )
-    # I made this but think it is unnecessary as all string type_val must be subject to
-    # regex.. I am leaving it here just in case in the future I find it necessary.
-    #   YPBach 2021-01-08 17:36:53 (KST: GMT+09:00)
-    # regex : bool or list of bool optional.
-    #     Whether to use regex for `type_val` matching. Default is `False`. If it
-    #     is a list, it must have the identical length to `type_key` and
-    #     `type_val`. An example is that you want to select ``OBJECT`` with regex
-    #     of ``'NGC.*'``, but ``EXPTIME`` of ``120``, which is a numeric. Sometimes
-    #     the header will have ``'120.0'``, which may not be easily selected by
-    #     regex. In that case, an internal parser is easier to use to catch any
-    #     numeric values that must be regarded as the same thing. A possible usage
-    #     is: ``type_key=["OBJECT", "EXPTIME"], type_val=["NGC*", 120],
-    #     regex=[True, False]``.
-    # if isinstance(regex, bool):
-    #     regex = [regex]*len(type_key)
-    # else:
-    #     try:
-    #         if len(regex) != len(type_key):
-    #             raise ValueError("Length of regex differ from type_key and type_val.")
-    #         if not all(isinstance(r, bool) for r in regex):
-    #             raise TypeError("If regex is not bool, it must be list of bool.")
-    #     except TypeError:
-    #         raise TypeError("If regex is not bool, it must be list of bool.")
-
-    # Setting whether we have to select a subset from the list
-    selecting = len(type_key) > 0
-
-    if verbose:
-        logger.info("Analyzing FITS...")
-
-    if isinstance(inputs, Table):
-        summary_table = inputs.to_pandas()
-        fitslist = summary_table[table_filecol].to_list()
-    elif isinstance(inputs, pd.DataFrame):
-        summary_table = inputs
-        fitslist = summary_table[table_filecol].to_list()
-    else:
-        # No need to sort here because the real "sort" will be done later in fits_summary
-        fitslist = inputs2list(
-            inputs,
-            sort=False,
-            accept_ccdlike=True,
-            check_coherency=False,
-            path_to_text=path_to_text,
-        )
-        if selecting:
-            summary_table = fits_summary(
-                fitslist,
-                extension=extension,
-                # extension will be parsed within fits_summary (no need to care here)
-                verbose=verbose,
-                fname_option="relative",
-                keywords=type_key,
-                sort_by=None,
-            )
-        else:
-            summary_table = None
-
-    if summary_table is not None:
-        with contextlib.suppress(ValueError):
-            summary_table.reset_index(inplace=True, drop=True)
-
-    if verbose:
-        logger.info("Done.")
-
-    # ******************************************************************************** #
-    # *                             SELECT AND LOAD TO MATCHED                       * #
-    # ******************************************************************************** #
-    # == Do regex matching if type_val[i] is string ================================== #
-    _type_key = []
-    _type_val = []
-    if selecting:
-        for k, v in zip(type_key, type_val, strict=False):
-            if isinstance(v, str):
-                match_mask = summary_table[k].str.match(v)
-                summary_table = summary_table[match_mask]
-                fitslist = np.array(fitslist)[match_mask].tolist()
-                # NOTE: Is there a better way to do this?
-                with contextlib.suppress(ValueError):
-                    summary_table.reset_index(inplace=True, drop=True)
-            else:  # not used as regex
-                _type_key.append(k)
-                _type_val.append(v)
-                continue  # need to do _check_mismatch below
-
-    matched = []
-    if selecting:
-        # == Select FITS based on type_key and type_val ============================== #
-        for i, row in summary_table.iterrows():
-            # I intentionally used iterrows instead of making mask, because for
-            # some cases the keyword (e.g., an angle) can contain both str and
-            # float among CCDs.
-            #   For example, if we want to select ``angle == 0.0``, masking
-            # cannot work because the column has dtype of object
-            # (``summary_table[column].dtype`` is `object``).
-            #   Instead, _check_mismatch tries to convert the value found in
-            # the header to int, and if it fails, tries float, and finally uses
-            # str. This is the most natural way I could think of.
-            # ysBach, 2020-05-15 09:44:13 (KST: GMT+09:00)
-            mismatch = _check_mismatch(row, _type_key, _type_val)
-            if mismatch:  # skip this row (file)
-                continue
-
-            # if not skipped:
-            item = fitslist[i]
-            if isinstance(item, CCDData):
-                if trimsec is None:
-                    matched.append(item)
-                else:
-                    matched.append(imslice(item, trimsec=trimsec))
-            else:  # it must be a path to a file
-                fpath = Path(item)
-                if prefer_ccddata:
-                    # extension will be parsed within load_ccd (no need to care here)
-                    ccd_i = load_ccd(fpath, extension=extension, unit=unit)
-                    if trimsec is not None:
-                        ccd_i = imslice(ccd_i, trimsec=trimsec)
-                    matched.append(ccd_i)
-                else:
-                    if path_to_text:
-                        matched.append(str(fpath))
-                    else:
-                        matched.append(fpath)
-    else:
-        # == Use all item in fitslist ================================================ #
-        # summary_table is not used.
-        for item in fitslist:
-            if isinstance(item, CCDData):
-                if trimsec is None:
-                    matched.append(item)
-                else:
-                    matched.append(imslice(item, trimsec=trimsec))
-            else:  # it must be a path to a file
-                if prefer_ccddata:
-                    # extension will be parsed within load_ccd (no need to care here)
-                    ccd_i = load_ccd(item, extension=extension, unit=unit)
-                    if trimsec is not None:
-                        ccd_i = imslice(ccd_i, trimsec=trimsec)
-                    matched.append(ccd_i)
-                else:  # TODO: Is it better to remove Path here?
-                    if path_to_text:
-                        matched.append(str(item))
-                    else:
-                        matched.append(Path(item))
-
-    # ******************************************************************************** #
-    # *                           PRINT INFO MESSAGE OR WARNING                      * #
-    # ******************************************************************************** #
-    if len(matched) == 0:
-        if selecting:
-            logger.warning(
-                'No FITS file had "%s = %s". Maybe int/float/str confusing?',
-                type_key,
-                type_val,
-            )
-        else:
-            logger.warning("No FITS file found")
-    else:
-        if selecting:
-            N = len(matched)
-            ks = str(type_key)
-            vs = str(type_val)
-            if verbose:
-                if prefer_ccddata:
-                    logger.info('%d FITS files with "%s = %s" are loaded.', N, ks, vs)
-                else:
-                    logger.info('%d FITS files with "%s = %s" are selected.', N, ks, vs)
-        else:
-            if verbose and prefer_ccddata:
-                logger.info("%d FITS files are loaded.", len(matched))
-
-    return matched
-
-
-# TODO: accept the input like ``sigma_clip_func='median'``, etc.
 def combine_ccd(
-    fitslist: Any = None,
+    fitslist: SummaryInput | None = None,
     summary_table: pd.DataFrame | Table | None = None,
     table_filecol: str = "file",
     trimsec: str | None = None,
@@ -438,16 +80,16 @@ def combine_ccd(
     normalize_median: bool = False,
     exposure_key: str = "EXPTIME",
     mem_limit: float = 2e9,
-    combine_uncertainty_function=None,
+    combine_uncertainty_function: Callable[..., np.ndarray] | None = None,
     extension: HDUExt = None,
     type_key: str | list[str] | None = None,
-    type_val: Any = None,
+    type_val: object = None,
     dtype: str = "float32",
     uncertainty_dtype: str = "float32",
     output_verify: str = "fix",
     overwrite: bool = False,
     verbose: bool = True,
-    **kwargs: Any,
+    **kwargs: object,
 ) -> CCDData:
     """Combining images -- slight variant from ccdproc.
 
@@ -476,7 +118,7 @@ def combine_ccd(
         FITS files.
 
     trimsec : `str`, [`list` of] `int`, [`list` of] slice, optional
-        Section of the data to be extracted by `~astroimred.imops.ccdutils.imslice`.
+        Section of the data to be extracted by `~astroimred.imutil.ccdops.imslice`.
         Default is `None`.
 
     output : path-like or `None`, optional.

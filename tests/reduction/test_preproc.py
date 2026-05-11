@@ -110,9 +110,6 @@ class TestFlatCor:
 
         corrected = imred.preproc.flatcor(ccd, mflat=mflat, flat_norm_value=1.0)
 
-        expected_left = 100 / 0.8  # 125
-        expected_right = 100 / 1.2  # 83.333...
-
         np.testing.assert_allclose(corrected.data[:, :5], 125.0, rtol=1e-6)
         np.testing.assert_allclose(corrected.data[:, 5:], 100 / 1.2, rtol=1e-6)
 

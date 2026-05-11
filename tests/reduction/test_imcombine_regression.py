@@ -18,11 +18,11 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-import astroimred.reduction as imred
+from astroimred.imutil.imcombine import ndcombine
 
-imred_uc = import_module("astroimred.reduction.imutil.util_comb")
-imred_ur = import_module("astroimred.reduction.imutil.util_reject")
-ndcombine = imred.ndcombine
+imred_uc = import_module("astroimred.imutil._util_comb")
+imred_ur = import_module("astroimred.imutil._util_rej")
+
 _get_dtype_limits = imred_uc._get_dtype_limits
 _set_cenfunc = imred_uc._set_cenfunc
 _set_combfunc = imred_uc._set_combfunc

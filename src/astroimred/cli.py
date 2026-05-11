@@ -2,8 +2,8 @@ import argparse
 import logging
 import sys
 
+from .fitsmgmt.table import fits_summary
 from .logging import enable_console_logging
-from .mgmt.summary import fits_summary
 
 
 def run_summary() -> None:

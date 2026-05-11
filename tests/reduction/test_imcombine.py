@@ -5,8 +5,9 @@ import pytest
 from astropy.io import fits
 from astropy.nddata import CCDData
 
-import astroimred.reduction as imred
-from astroimred.reduction.imutil.util_comb import get_zsw
+import astroimred.imutil as imutil
+from astroimred.imutil._util_comb import get_zsw
+from astroimred.imutil.imcombine import imcombine, ndcombine
 
 
 def _write_fits(path, data, header=None):
@@ -149,8 +150,10 @@ def _assert_imcombine_full(result, expected):
 
 def test_stack_fits_removed():
     """`stack_FITS` has been replaced by `select_fits`."""
-    assert not hasattr(imred.combutil, "stack_FITS")
-    assert not hasattr(imred, "stack_FITS")
+    import astroimred.reduction.combutil as _combutil
+
+    assert not hasattr(_combutil, "stack_FITS")
+    assert not hasattr(imutil, "stack_FITS")
 
 
 def test_get_zsw_does_not_mutate_kwargs():
@@ -175,7 +178,7 @@ def test_get_zsw_does_not_mutate_kwargs():
 
 
 class TestNDCombine:
-    """Tests for `~imred.imutil.ndcombine` function (core algorithmic logic)."""
+    """Tests for `~astroimred.imutil.ndcombine` core algorithmic logic."""
 
     def test_basic_average(self):
         """Test simple average combination."""
@@ -186,7 +189,7 @@ class TestNDCombine:
         arr[1] += 2
         arr[2] += 3
 
-        combined = imred.ndcombine(arr, combine="average")
+        combined = ndcombine(arr, combine="average")
         np.testing.assert_allclose(combined, 2.0, rtol=1e-6)
 
     def test_basic_median(self):
@@ -197,7 +200,7 @@ class TestNDCombine:
         arr[2] += 100
 
         # Median is 10.
-        combined = imred.ndcombine(arr, combine="median")
+        combined = ndcombine(arr, combine="median")
         np.testing.assert_allclose(combined, 10.0, rtol=1e-6)
 
     def test_basic_lmedian(self):
@@ -208,7 +211,7 @@ class TestNDCombine:
         arr[1] += 2
         arr[2] += 3
         arr[3] += 4
-        combined = imred.ndcombine(arr, combine="lmedian")
+        combined = ndcombine(arr, combine="lmedian")
         np.testing.assert_allclose(combined, 2.0, rtol=1e-6)
 
     def test_sigma_clip(self):
@@ -225,7 +228,7 @@ class TestNDCombine:
         arr[4] = 1000.0
 
         # combine="average", reject="sigclip", sigma=[3, 3]
-        combined = imred.ndcombine(
+        combined = ndcombine(
             arr, combine="average", reject="sigclip", sigma=[1.0, 1.0], verbose=False
         )
 
@@ -241,22 +244,22 @@ class TestNDCombine:
         arr = arr[:, None, None] * np.ones((5, 2, 2))
 
         # nlow=1, nhigh=1 -> reject lowest and highest.
-        combined = imred.ndcombine(
-            arr, combine="average", reject="minmax", n_minmax=[1, 1]
-        )
+        combined = ndcombine(arr, combine="average", reject="minmax", n_minmax=[1, 1])
 
         # Remaining: 10, 10, 10 -> Average 10.
         np.testing.assert_allclose(combined, 10.0, rtol=1e-6)
 
     def test_numba_sigclip_aux_analytical(self):
         """The Numba path must preserve NaN-aware rejection and combine math."""
-        old = imred.imutil_config.IMUTIL_USE_NUMBA
-        imred.set_imutil_use_numba(True)
+        from astroimred.imutil import _config as _imutil_config
+
+        old = _imutil_config.IMOPS_USE_NUMBA
+        imutil.set_use_numba(True)
         try:
             yy, xx = np.mgrid[:2, :3]
             base = yy * 10.0 + xx
             arr = np.stack([base + value for value in [10.0, 10.0, 10.0, 1000.0]])
-            comb, err, mask_rej, mask_thresh, low, upp, nit, rejcode = imred.ndcombine(
+            comb, err, mask_rej, mask_thresh, low, upp, nit, rejcode = ndcombine(
                 arr,
                 combine="average",
                 reject="sigclip",
@@ -269,7 +272,7 @@ class TestNDCombine:
                 full=True,
             )
         finally:
-            imred.set_imutil_use_numba(old)
+            imutil.set_use_numba(old)
 
         expected_mask = np.zeros(arr.shape, dtype=bool)
         expected_mask[3] = True
@@ -284,7 +287,7 @@ class TestNDCombine:
 
 
 class TestImCombine:
-    """Tests for `~imred.imutil.imcombine` wrapper with FITS files."""
+    """Tests for `~astroimred.imutil.imcombine` wrapper with FITS files."""
 
     def test_imcombine_files(self, tmp_path):
         """Test combining FITS files."""
@@ -300,7 +303,7 @@ class TestImCombine:
         # Combine
         outpath = tmp_path / "combined.fits"
 
-        res = imred.imcombine(paths, output=outpath, combine="average", reject="none")
+        res = imcombine(paths, output=outpath, combine="average", reject="none")
 
         # Check result object
         np.testing.assert_allclose(res.data, 20.0, rtol=1e-6)
@@ -326,7 +329,7 @@ class TestImCombine:
             ).writeto(path)
             paths.append(path)
 
-        result = imred.imcombine(
+        result = imcombine(
             paths,
             combine="average",
             reject="none",
@@ -355,8 +358,8 @@ class TestImCombine:
             "return_dict": True,
             "dtype": "float32",
         }
-        full = imred.imcombine(paths, memlimit=1e9, **common)
-        chunked = imred.imcombine(paths, memlimit=500, **common)
+        full = imcombine(paths, memlimit=1e9, **common)
+        chunked = imcombine(paths, memlimit=500, **common)
 
         np.testing.assert_allclose(
             chunked["comb"].data, full["comb"].data, rtol=1e-6, equal_nan=True
@@ -385,7 +388,7 @@ class TestImCombine:
             _write_fits(p, image)
             paths.append(p)
 
-        result = imred.imcombine(
+        result = imcombine(
             paths,
             offsets=raw_offsets,
             zero=zeros,
@@ -418,7 +421,7 @@ class TestImCombine:
             _write_fits(p, image, _wcs_header_for_offset(raw_offset, image.shape))
             paths.append(p)
 
-        result = imred.imcombine(
+        result = imcombine(
             paths,
             offsets="wcs",
             combine="median",
@@ -444,7 +447,7 @@ class TestImCombine:
 
         with warnings.catch_warnings():
             warnings.simplefilter("ignore", RuntimeWarning)
-            result = imred.imcombine(
+            result = imcombine(
                 paths,
                 offsets="physical",
                 combine="lmedian",
@@ -479,7 +482,7 @@ class TestImCombine:
             _write_fits(p, image)
             paths.append(p)
 
-        result = imred.imcombine(
+        result = imcombine(
             paths,
             combine=combine,
             reject="minmax",
@@ -516,7 +519,7 @@ class TestImCombine:
             _write_fits(p, image)
             paths.append(p)
 
-        result = imred.imcombine(
+        result = imcombine(
             paths,
             combine="average",
             reject="sigclip",
