@@ -1,6 +1,7 @@
 """FITS file summary and table-selection helpers."""
 
 import contextlib
+import logging
 from collections.abc import Sequence
 from pathlib import Path
 
@@ -30,13 +31,10 @@ SummaryInput = (
 )
 
 
-def _write_summary(
-    output: StrPathLike, summarytab: pd.DataFrame, verbose: bool = True
-) -> None:
+def _write_summary(output: StrPathLike, summarytab: pd.DataFrame) -> None:
     """Write a summary table, choosing format from the file suffix."""
     output = Path(output)
-    if verbose:
-        logger.info('Saving the summary to "%s"', output)
+    logger.info('Saving the summary to "%s"', output)
 
     suffix = output.suffix.lower()
     if suffix in {".parq", ".parquet"}:
@@ -60,7 +58,6 @@ def fits_summary(
     querystr: str | None = None,
     negate_fullmatch: bool = False,
     nonunique_keys: bool = False,
-    verbose: bool = True,
     **kwargs: object,
 ) -> pd.DataFrame | None:
     """Extract summary rows from FITS headers.
@@ -144,9 +141,6 @@ def fits_summary(
         will not be removed.
         Default is `False`.
 
-    verbose : `bool`, optional
-        Whether to print the progress. Default is `True`.
-
     **kwargs :
         The keyword arguments to be passed to `~astropy.io.fits.open`.
 
@@ -193,6 +187,9 @@ def fits_summary(
     if inputs is None:
         return None
 
+    if isinstance(keywords, str) and keywords != "*":
+        keywords = [keywords]
+
     if nonunique_keys:
         summ = fits_summary(
             inputs=inputs,
@@ -209,20 +206,17 @@ def fits_summary(
             querystr=querystr,
             negate_fullmatch=negate_fullmatch,
             nonunique_keys=False,
-            verbose=verbose,
             **kwargs,
         )
-        if verbose:
-            logger.info("Unique keys that will be removed:")
+        logger.info("Unique keys that will be removed:")
         for key in list(summ.columns):
             if keywords is not None and key in keywords:
                 continue
             if len(_uniq := summ[key].unique()) == 1:
-                if verbose:
-                    logger.info(" * %-8s: %s", key, _uniq[0])
+                logger.info(" * %-8s: %s", key, _uniq[0])
                 summ.pop(key)
         if output is not None:
-            _write_summary(output, summ, verbose=verbose)
+            _write_summary(output, summ)
         return summ
 
     # Although there's no need to sort here because the real "sort" will be
@@ -234,38 +228,59 @@ def fits_summary(
     )
 
     if len(fitslist) == 0:
-        if verbose:
-            logger.info("No FITS file found.")
+        logger.info("No FITS file found.")
         return None
 
     def _get_fname_fsize_hdr(item, idx, extension):
-        if isinstance(item, CCDData):
+        try:
+            item_path = Path(item)
+        except TypeError:
+            item_path = None
+
+        if item_path is not None:
+            if fname_option == "relative":
+                fname = str(item_path)
+            elif fname_option == "absolute":
+                fname = str(item_path.absolute())
+            elif fname_option == "name":
+                fname = item_path.name
+            else:
+                raise ValueError(f"fname_option `{fname_option}`not understood.")
+            fsize = item_path.stat().st_size
+            # Don't change to MB/GB, which will make it float...
+            if (
+                not verify_fix
+                and not kwargs
+                and example_header is None
+                and keywords is not None
+                and keywords != "*"
+            ):
+                hdr = fits.getheader(item_path, extension)
+            else:
+                with fits.open(item_path, **kwargs) as hdul:
+                    if verify_fix:
+                        hdul.verify("fix")
+                    hdr = hdul[extension].header.copy()
+        elif isinstance(item, CCDData):
             # NOTE: CCDData does not support extension (only available when it
             #   is being read)!
             fname = f"CCDData in fitslist[{idx:d}]"
             fsize = None
             hdr = item.header
-        else:
-            if fname_option == "relative":
-                fname = str(item)
-            elif fname_option == "absolute":
-                fname = str(item.absolute())
-            elif fname_option == "name":
-                fname = item.name
-            else:
-                raise ValueError(f"fname_option `{fname_option}`not understood.")
-            fsize = Path(item).stat().st_size
-            # Don't change to MB/GB, which will make it float...
-            with fits.open(item, **kwargs) as hdul:
-                if verify_fix:
-                    hdul.verify("fix")
-                hdr = hdul[extension].header.copy()
+        elif isinstance(item, fits.HDUList):
+            fname = f"HDUList in fitslist[{idx:d}]"
+            fsize = None
+            hdr = item[extension].header
+        elif isinstance(item, (fits.PrimaryHDU, fits.ImageHDU)):
+            fname = f"{item.__class__.__name__} in fitslist[{idx:d}]"
+            fsize = None
+            hdr = item.header
 
         return fname, fsize, hdr
 
     skip_keys = ["COMMENT", "HISTORY"]
 
-    if verbose and keywords is not None:
+    if keywords is not None:
         if keywords == "*":
             logger.info("Extracting all keywords...")
         else:
@@ -280,8 +295,7 @@ def fits_summary(
     # Save example header
     if example_header is not None:
         fname0, _, hdr0 = first_info
-        if verbose:
-            logger.info("Header of 0-th: %s -> %s", fname0, example_header)
+        logger.info("Header of 0-th: %s -> %s", fname0, example_header)
         hdr0.totextfile(example_header, overwrite=True)
 
     # load ALL keywords for special cases
@@ -305,18 +319,21 @@ def fits_summary(
                 continue
             keywords.append(key_i)
 
-        if verbose:
-            logger.info(
-                "All %d keywords (guessed from %s) will be loaded.",
-                len(keywords),
-                fname0,
-            )
+        logger.info(
+            "All %d keywords (guessed from %s) will be loaded.",
+            len(keywords),
+            fname0,
+        )
 
     # Initialize
     summarytab = {"file": [], "filesize": []}
     missing_keys = set()
+    missing_counts = {}
+    missing_examples = {}
+    log_missing = logger.isEnabledFor(logging.WARNING)
     for k in keywords:
         summarytab[k] = []
+    appenders = {k: summarytab[k].append for k in keywords}
 
     # Run through all the fits files
     for i, item in enumerate(fitslist):
@@ -327,19 +344,26 @@ def fits_summary(
         summarytab["file"].append(fname)
         summarytab["filesize"].append(fsize)
         for k in keywords:
-            try:
-                summarytab[k].append(hdr[k])
-            except KeyError:
-                if verbose:
-                    str_keyerror_fill = (
-                        "Key {:s} not found for {:s}, filling with None."
-                    )
-                    if isinstance(item, CCDData):
-                        logger.warning(str_keyerror_fill.format(k, f"fitslist[{i}]"))
-                    else:
-                        logger.warning(str_keyerror_fill.format(k, str(item)))
-                summarytab[k].append(None)
+            if k in hdr:
+                appenders[k](hdr[k])
+            else:
+                appenders[k](None)
                 missing_keys.add(k)
+                if log_missing:
+                    missing_counts[k] = missing_counts.get(k, 0) + 1
+                    if k not in missing_examples:
+                        missing_examples[k] = (
+                            f"fitslist[{i}]" if isinstance(item, CCDData) else str(item)
+                        )
+
+    if log_missing:
+        for k, count in missing_counts.items():
+            logger.warning(
+                "Key %s not found in %d input(s); filling with None. First missing: %s",
+                k,
+                count,
+                missing_examples[k],
+            )
 
     summarytab = pd.DataFrame.from_dict(summarytab)
     summarytab = df_selector(
@@ -348,6 +372,7 @@ def fits_summary(
         flags=flags,
         querystr=querystr,
         negate_fullmatch=negate_fullmatch,
+        copy=False,
     )
     if sort_by is not None:
         key = None if sort_map is None else lambda x: x.map(sort_map)
@@ -359,7 +384,7 @@ def fits_summary(
         )
 
     if output is not None:
-        _write_summary(output, summarytab, verbose=verbose)
+        _write_summary(output, summarytab)
 
     return summarytab
 
@@ -373,6 +398,7 @@ def df_selector(
     columns: str | list[str] | None = None,
     columns_drop: str | list[str] | None = None,
     reset_index: bool = True,
+    copy: bool = True,
 ) -> pd.DataFrame:
     """Select rows from a summary table.
 
@@ -404,6 +430,9 @@ def df_selector(
     reset_index : `bool`, optional.
         Whether to reset the DataFrame index after selection.
         Default: `True`.
+    copy : `bool`, optional.
+        Whether to copy the input table before selection.
+        Default: `True`.
 
     Returns
     -------
@@ -430,7 +459,7 @@ def df_selector(
     >>> # querystr="EXPTIME in [2, 3]"
 
     """
-    df = summarytab.copy()
+    df = summarytab.copy() if copy else summarytab
 
     if fullmatch is not None:
         if not isinstance(fullmatch, dict):
@@ -463,7 +492,7 @@ def df_selector(
     if reset_index:
         df = df.reset_index(drop=True)
 
-    return df.copy()
+    return df
 
 
 def group_fits(
@@ -698,7 +727,6 @@ def select_fits(
                 fitslist,
                 extension=extension,
                 # extension will be parsed within fits_summary (no need to care here)
-                verbose=verbose,
                 fname_option="relative",
                 keywords=type_key,
                 sort_by=None,

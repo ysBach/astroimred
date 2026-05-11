@@ -32,7 +32,6 @@ def run_summary() -> None:
             extension=args.extension,
             keywords=args.keywords,
             output=args.output,
-            verbose=args.verbose,
         )
         if df is not None and args.output is None:
             print(df)

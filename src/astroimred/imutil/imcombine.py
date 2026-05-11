@@ -190,12 +190,12 @@ def group_combine(
         summary = inputs.copy()
     elif isinstance(inputs, str):  # glob pattern
         load_fits = True
-        summary = fits_summary(inputs, verbose=verbose >= 2)
+        summary = fits_summary(inputs)
     else:
         inputs = listify(inputs)
         load_fits = not isinstance(inputs[0], CCDData)
         # Assume all are CCDData if the first element is CCDData
-        summary = fits_summary(inputs, verbose=verbose >= 2)
+        summary = fits_summary(inputs)
 
     gs, gt_key = group_fits(
         summary, type_key=type_key, type_val=type_val, group_key=group_key

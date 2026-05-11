@@ -380,9 +380,7 @@ def combine_ccd(
     # Normalize by exposure
     # TODO: Let it accept summary table as well as fitslist
     if normalize_exposure:
-        tmp = fits_summary(
-            fitslist=fitslist, keywords=[exposure_key], verbose=False, sort_by=None
-        )
+        tmp = fits_summary(inputs=fitslist, keywords=[exposure_key], sort_by=None)
         exptimes = tmp[exposure_key].tolist()
         scale = 1 / np.array(exptimes)
         cmt2hdr(header, "h", str_nexp, verbose=verbose)
