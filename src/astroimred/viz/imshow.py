@@ -4,7 +4,6 @@ Convenience wrappers especially for `matplotlib.pyplot.imshow`-like tools.
 """
 
 from collections.abc import Sequence
-from warnings import warn
 
 import numpy.typing as npt
 from astropy.visualization import (
@@ -23,7 +22,7 @@ from astropy.visualization import (
     ZScaleInterval,
 )
 
-__all__ = ["znorm", "zimshow", "norm_imshow", "astropy_stretch", "imshow_norm"]
+__all__ = ["znorm", "zimshow", "astropy_stretch", "imshow_norm"]
 
 
 _STRETCH_MAP: dict[str, BaseStretch] = {
@@ -276,12 +275,10 @@ def imshow_norm(
     tickorigin2center : bool, optional
         If ``True``, relabel axes ticks so that coordinate 0 sits at the
         image center. Default is ``False``.
-    xticks : array-like of int or None, optional
-        Only used when ``tickorigin2center=True``. Tick positions as offsets
-        from the image center along the x-axis. ``None`` generates symmetric
-        ticks automatically.
-    yticks : array-like of int or None, optional
-        Same as *xticks* but for the y-axis.
+    xticks, yticks : array-like of int or None, optional
+        Only used when `tickorigin2center` is `True`. Tick positions as offsets
+        from the image center along the x- and y-axis, respectively. `None`
+        generates symmetric ticks automatically.
     return_norm : bool, optional
         If ``True``, return ``(AxesImage, ImageNormalize)``. If ``False``
         (default), return only the ``AxesImage`` for backward compatibility.
@@ -295,7 +292,7 @@ def imshow_norm(
         The ``a`` parameter for ``SinhStretch``. Default is ``0.3``.
     vmin, vmax : float or None, optional
         Explicit minimum/maximum data values for the normalization.
-        Ignored when ``interval`` is set to a `~astropy.visualization.BaseInterval`
+        Ignored when ``i    nterval`` is set to a `~astropy.visualization.BaseInterval`
         instance or ``"zscale"``.
     min_percent, max_percent : float or None, optional
         Percentile-based minimum/maximum. Constructs
@@ -321,17 +318,6 @@ def imshow_norm(
         instance.
     """
     import numpy as np
-    from matplotlib.axes import Axes
-
-    # Detect old norm_imshow(ax, data, ...) positional convention and swap.
-    if isinstance(data, Axes) and not isinstance(ax, Axes):
-        warn(
-            "Passing ax as the first positional argument is deprecated. "
-            "Use imshow_norm(data, ax=ax, ...) instead.",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-        data, ax = ax, data
 
     # --- resolve stretch ---
     _stretch_tuning = {"asinh": asinh_a, "log": log_a, "power": power, "sinh": sinh_a}
@@ -402,21 +388,3 @@ def imshow_norm(
     if return_norm:
         return im, norm
     return im
-
-
-def norm_imshow(
-    *args: object,
-    **kwargs: object,
-) -> object | tuple[object, ImageNormalize]:
-    """Deprecated alias for `imshow_norm`. Use `imshow_norm` instead."""
-    warn(
-        "norm_imshow is deprecated and will be removed in a future version. "
-        "Use imshow_norm instead.",
-        DeprecationWarning,
-        stacklevel=2,
-    )
-    # norm_imshow had ax as first positional arg, data as second
-    if args:
-        ax, data = args[0], args[1]
-        return imshow_norm(data, ax=ax, **kwargs)
-    return imshow_norm(**kwargs)
