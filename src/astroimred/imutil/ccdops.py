@@ -8,6 +8,7 @@ from astro_ndslice import calc_offset_physical, offseted_shape, slicefy
 from astropy import units as u
 from astropy.coordinates import SkyCoord
 from astropy.nddata import CCDData, Cutout2D
+from astropy.nddata.utils import NoOverlapError, PartialOverlapError
 from astropy.time import Time
 from astropy.wcs import WCS
 
@@ -25,6 +26,7 @@ __all__ = [
     "propagate_ccdmask",
     "imslice",
     "trim_overlap",
+    "imcut",
     "cut_ccd",
     "bin_ccd",
     "convert_bit",
@@ -494,6 +496,106 @@ def trim_overlap(
     offsets, new_shape = offseted_shape(
         shapes, offsets, method="overlap", intify_offsets=False
     )
+
+
+def _normalize_cutout_size(size: int | float | tuple[int, int]) -> tuple[int, int]:
+    size_arr = np.asarray(size)
+    if size_arr.ndim == 0:
+        ny = nx = int(np.rint(size_arr.item()))
+    elif size_arr.size == 2:
+        ny, nx = (int(np.rint(v)) for v in size_arr.ravel())
+    else:
+        raise ValueError("size must be a scalar or a 2-element sequence.")
+    if ny <= 0 or nx <= 0:
+        raise ValueError("size values must be positive.")
+    return ny, nx
+
+
+def imcut(
+    data: np.ndarray | CCDData,
+    position: tuple[float, float] | list[float] | np.ndarray,
+    size: int | float | tuple[int, int] | tuple[float, float],
+    mode: str = "trim",
+    fill_value: float = np.nan,
+    copy: bool = True,
+) -> np.ndarray:
+    """Return a fast 2-D rectangular image cutout without metadata handling.
+
+    Parameters
+    ----------
+    data : `~numpy.ndarray` or `~astropy.nddata.CCDData`
+        Input image. If `~astropy.nddata.CCDData`, only ``data.data`` is used.
+
+    position : 2-element sequence
+        Cutout center in ``(x, y)`` pixel order, matching
+        `~astropy.nddata.Cutout2D`.
+
+    size : scalar or 2-element sequence
+        Cutout size. A scalar makes a square cutout. A 2-element sequence is in
+        NumPy shape order ``(ny, nx)``.
+
+    mode : {'trim', 'partial', 'strict'}, optional
+        ``'trim'`` returns only the overlapping region. ``'partial'`` returns
+        the requested shape and fills non-overlapping pixels with
+        ``fill_value``. ``'strict'`` requires the full requested box to lie
+        inside the input image.
+
+    fill_value : number, optional
+        Fill value used only for ``mode='partial'``.
+
+    copy : bool, optional
+        Whether to copy the returned cutout for ``'trim'`` and ``'strict'``.
+        ``'partial'`` always allocates a new array.
+    """
+    if mode not in {"trim", "partial", "strict"}:
+        raise ValueError("mode must be one of 'trim', 'partial', or 'strict'.")
+
+    arr = data.data if isinstance(data, CCDData) else np.asarray(data)
+    if arr.ndim != 2:
+        raise ValueError(f"imcut only supports 2-D images; got ndim={arr.ndim}.")
+
+    try:
+        xcen, ycen = np.asarray(position, dtype=float).ravel()
+    except ValueError as err:
+        raise ValueError(
+            "position must be a 2-element sequence in (x, y) order."
+        ) from err
+
+    ny, nx = _normalize_cutout_size(size)
+    y_min = int(np.ceil(ycen - (ny / 2)))
+    x_min = int(np.ceil(xcen - (nx / 2)))
+    y_max = y_min + ny
+    x_max = x_min + nx
+
+    image_y, image_x = arr.shape
+    src_y_min = max(y_min, 0)
+    src_y_max = min(y_max, image_y)
+    src_x_min = max(x_min, 0)
+    src_x_max = min(x_max, image_x)
+
+    if src_y_min >= src_y_max or src_x_min >= src_x_max:
+        raise NoOverlapError("Arrays do not overlap.")
+
+    partial_overlap = (
+        src_y_min != y_min
+        or src_y_max != y_max
+        or src_x_min != x_min
+        or src_x_max != x_max
+    )
+    if mode == "strict" and partial_overlap:
+        raise PartialOverlapError("Arrays overlap only partially.")
+
+    cut = arr[src_y_min:src_y_max, src_x_min:src_x_max]
+    if mode in {"trim", "strict"}:
+        return cut.copy() if copy else cut
+
+    out = np.full((ny, nx), fill_value, dtype=arr.dtype)
+    dst_y_min = src_y_min - y_min
+    dst_y_max = dst_y_min + (src_y_max - src_y_min)
+    dst_x_min = src_x_min - x_min
+    dst_x_max = dst_x_min + (src_x_max - src_x_min)
+    out[dst_y_min:dst_y_max, dst_x_min:dst_x_max] = cut
+    return out
 
 
 def cut_ccd(

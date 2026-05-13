@@ -1,6 +1,6 @@
 """astroimred: astronomical image reduction and FITS utilities."""
 
-from . import _core, fitsmgmt, imutil, viz
+from . import _core, fitsmgmt, imutil, phot, viz
 from ._core.geometry import *
 from ._core.numeric import *
 from ._core.system import *
