@@ -44,14 +44,41 @@ sep_default_kernel = np.array(
 )
 
 
-def _sanitize_byteorder(data):
+# SEP only accepts these native float dtypes; integers must be upcast.
+_SEP_FLOAT_DTYPES = {np.dtype("float32"), np.dtype("float64")}
+
+
+def _as_sep_array(data, *, dtype=None):
+    """Return a C-contiguous, native-endian array safe for SEP.
+
+    - Unwraps CCDData.
+    - Converts non-native byte order by *value* (not reinterpretation).
+    - Upcasts integer dtypes to float32 so SEP accepts them.
+    - Applies an explicit dtype override when requested.
+    """
     if data is None:
         return None
-    # return np.ascontiguousarray(data)
-    elif data.dtype.byteorder == ">":
-        return data.byteswap().view(data.dtype.newbyteorder())
+    if isinstance(data, CCDData):
+        data = data.data
+    arr = np.asarray(data)
+    target_dtype = dtype
+    if target_dtype is None and arr.dtype.newbyteorder("=") not in _SEP_FLOAT_DTYPES:
+        target_dtype = np.float32
+    if target_dtype is None:
+        target_dtype = arr.dtype.newbyteorder("=")
+    arr = arr.astype(target_dtype, copy=False)
+    return np.ascontiguousarray(arr)
+
+
+def _combine_masks(base_mask, src_mask, maskthresh):
+    if base_mask is None:
+        return src_mask
+    combined = np.asarray(base_mask).copy()
+    if combined.dtype == np.dtype(bool):
+        combined |= src_mask
     else:
-        return data
+        combined[src_mask] = np.nextafter(maskthresh, np.inf)
+    return np.ascontiguousarray(combined)
 
 
 def sep_back(
@@ -61,7 +88,6 @@ def sep_back(
     filter_threshold: float = 0.0,
     box_size: tuple[int, int] = (64, 64),
     filter_size: tuple[int, int] = (3, 3),
-    byteorder: str = ">",
 ) -> sep.Background:
     """
     Notes
@@ -75,7 +101,8 @@ def sep_back(
         The 2D array from which to estimate the background.
 
     mask : `~numpy.ndarray`, optional
-        2-d mask array.
+        2-d mask array. Numeric masks respect `maskthresh`; values above
+        `maskthresh` are treated as masked. Boolean masks use True/False.
 
     maskthresh : float, optional
         Only in `sep`. The effective mask will be ``m = (mask.astype(float) >
@@ -126,13 +153,10 @@ def sep_back(
         All other methods/attributes include `bkg.subfrom()`, `bkg.globalback`,
         and `bkg.globalrms`.
     """
-    try:
-        data = _sanitize_byteorder(data)
-    except AttributeError:  # if data is in CCDData...
-        data = _sanitize_byteorder(data.data)
+    data = _as_sep_array(data)
 
     if mask is not None:
-        mask = np.asarray(mask).astype(bool)
+        mask = np.ascontiguousarray(np.asarray(mask))
 
     box_size = np.atleast_1d(box_size)
     if len(box_size) == 1:
@@ -143,27 +167,16 @@ def sep_back(
     if len(filter_size) == 1:
         filter_size = np.repeat(filter_size, 2)
 
-    kw = {
-        "mask": mask,
-        "bw": box_size[1],
-        "bh": box_size[0],
-        "fw": filter_size[1],
-        "fh": filter_size[0],
-        "maskthresh": maskthresh,
-        "fthresh": filter_threshold,
-    }
-    try:
-        bkg = sep.Background(data, **kw)
-    except ValueError:  # Non-native byte order
-        try:  # numpy < 2
-            data = data.byteswap().newbyteorder()
-        except AttributeError:  # numpy >= 2
-            data = data.view(data.dtype.newbyteorder(byteorder))
-        try:
-            bkg = sep.Background(data, **kw)
-        except ValueError:  # e.g., int16 not supported
-            bkg = sep.Background(data.astype("float32"), **kw)
-
+    bkg = sep.Background(
+        data,
+        mask=mask,
+        bw=box_size[1],
+        bh=box_size[0],
+        fw=filter_size[1],
+        fh=filter_size[0],
+        maskthresh=maskthresh,
+        fthresh=filter_threshold,
+    )
     return bkg
 
 
@@ -297,7 +310,7 @@ def _sep_extract(
         raise ValueError("Upto one of `err` and `var` can be given.")
 
     # No need to check CCDData thanks to @support_nddata.
-    data = np.ascontiguousarray(data)
+    data = _as_sep_array(data)
     mask = None if mask is None else np.ascontiguousarray(mask)
 
     if bkg is None:
@@ -314,10 +327,10 @@ def _sep_extract(
             err = np.sqrt(err**2 + bkg.rms() ** 2)
 
     obj, seg = sep.extract(
-        _sanitize_byteorder(data_skysub),
+        _as_sep_array(data_skysub),
         thresh=thresh,
-        err=None if err is None else np.ascontiguousarray(err),
-        var=None if var is None else np.ascontiguousarray(var),
+        err=None if err is None else _as_sep_array(err),
+        var=None if var is None else _as_sep_array(var),
         mask=mask,  # already contiguous (see above)
         maskthresh=maskthresh,
         minarea=minarea,
@@ -332,9 +345,8 @@ def _sep_extract(
     )
     if seg_remove_mask and mask is not None:
         # FIXME: https://github.com/kbarbary/sep/issues/149
-        # Use boolean indexing, not bitwise AND — seg is an int label array
-        # and `seg & ~mask` corrupts label values via bitwise ops on integers.
-        seg[mask.astype(bool)] = 0
+        effective_mask = np.asarray(mask, dtype=float) > maskthresh
+        seg[effective_mask] = 0
     return obj, seg
 
 
@@ -469,10 +481,10 @@ def sep_extract(
     obj.insert(loc=0, column="segm_label", value=np.arange(1, len(obj) + 1).astype(int))
     # log the original input threshold
     obj.insert(loc=1, column="thresh_raw", value=thresh)
-    mask = bezel_mask(obj["x"], obj["y"], nx, ny, bezel_x=bezel_x, bezel_y=bezel_y)
+    reject = bezel_mask(obj["x"], obj["y"], nx, ny, bezel_x=bezel_x, bezel_y=bezel_y)
     if maxarea is not None:
-        mask = mask & (obj["npix"] <= maxarea)
-    obj = obj[~mask]
+        reject = reject | (obj["npix"] > maxarea)
+    obj = obj[~reject]
 
     if pos_ref is not None:
         pos_ref = np.array(pos_ref).flatten()
@@ -601,7 +613,7 @@ def sep_extract_iterative(
 
     # running source mask (starts empty, grows each iteration)
     src_mask = np.zeros(np.asarray(data).shape, dtype=bool)
-    base_mask = np.asarray(mask, dtype=bool) if mask is not None else None
+    base_mask = None if mask is None else np.ascontiguousarray(np.asarray(mask))
 
     bkg = None
     obj = None
@@ -609,11 +621,13 @@ def sep_extract_iterative(
 
     for _i in range(n_iter):
         # combine user mask with sources found so far
-        combined_mask = src_mask if base_mask is None else (base_mask | src_mask)
+        combined_mask = _combine_masks(base_mask, src_mask, maskthresh)
 
         bkg = sep_back(
             data,
-            mask=combined_mask if combined_mask.any() else None,
+            mask=combined_mask
+            if np.any(np.asarray(combined_mask) > maskthresh)
+            else None,
             maskthresh=maskthresh,
             filter_threshold=filter_threshold,
             box_size=box_size,

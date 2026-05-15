@@ -1,5 +1,5 @@
 """
-Tests for astroimred.phot.seputil module.
+Tests for astroimred.external.sep module.
 
 All expected values are analytically derived.
 
@@ -9,7 +9,12 @@ Note: These tests require the sep package, which is a core dependency.
 import numpy as np
 from numpy.testing import assert_allclose
 
-from astroimred.phot.seputil import sep_back, sep_extract, sep_flux_auto
+from astroimred.external.sep import (
+    sep_back,
+    sep_extract,
+    sep_extract_iterative,
+    sep_flux_auto,
+)
 
 
 # =============================================================================
@@ -384,3 +389,178 @@ class TestSepIntegration:
 
         assert fl[0] > 0
         assert dfl[0] >= 0
+
+
+# =============================================================================
+# Correctness regression tests (fixes from sep-wrapper-fix-plan)
+# =============================================================================
+class TestSepBackCorrectness:
+    """Regression tests for sep_back correctness fixes."""
+
+    def test_ccddata_input_direct(self):
+        """sep_back(CCDData(...)) must not raise — advertised API."""
+        from astropy.nddata import CCDData
+
+        data = np.full((50, 50), 42.0, dtype=np.float32)
+        ccd = CCDData(data, unit="adu")
+        bkg = sep_back(ccd)
+        assert_allclose(bkg.globalback, 42.0, atol=2.0)
+
+    def test_native_int16_not_byte_corrupted(self):
+        """int16 image with value 7 must give globalback ~7, not 1792."""
+        data = np.full((50, 50), 7, dtype=np.int16)
+        bkg = sep_back(data)
+        assert_allclose(bkg.globalback, 7.0, atol=1.0)
+
+    def test_big_endian_float(self):
+        """Big-endian float32 array must work and give correct background."""
+        data = np.full((50, 50), 25.0, dtype=">f4")
+        bkg = sep_back(data)
+        assert_allclose(bkg.globalback, 25.0, atol=2.0)
+
+    def test_numeric_mask_respects_maskthresh(self):
+        """Numeric mask values at or below maskthresh must not be masked."""
+        data = np.full((64, 64), 10.0, dtype=np.float32)
+        # Put a bright patch that would skew background
+        data[28:36, 28:36] = 1000.0
+        # Mask value 0.5 with maskthresh=1.0 → pixel should be UNmasked
+        mask = np.zeros((64, 64), dtype=np.float32)
+        mask[28:36, 28:36] = 0.5  # below maskthresh=1.0 → should not mask
+        bkg_unmasked = sep_back(data, mask=mask, maskthresh=1.0)
+        bkg_no_mask = sep_back(data)
+        # Both should include the bright patch → similar (both elevated)
+        assert_allclose(bkg_unmasked.globalback, bkg_no_mask.globalback, rtol=0.1)
+
+
+class TestSepExtractCorrectness:
+    """Regression tests for _sep_extract correctness fixes."""
+
+    def test_big_endian_err(self):
+        """Big-endian err array must not raise."""
+        yy, xx = np.mgrid[:60, :60]
+        data = (
+            5.0 + 500.0 * np.exp(-((xx - 30.0) ** 2 + (yy - 30.0) ** 2) / 18.0)
+        ).astype(np.float32)
+        err = np.full((60, 60), 2.0, dtype=">f4")
+        obj, segm = sep_extract(data, thresh=5.0, err=err)
+        assert len(obj) >= 1
+
+    def test_big_endian_var(self):
+        """Big-endian var array must not raise."""
+        yy, xx = np.mgrid[:60, :60]
+        data = (
+            5.0 + 500.0 * np.exp(-((xx - 30.0) ** 2 + (yy - 30.0) ** 2) / 18.0)
+        ).astype(np.float32)
+        var = np.full((60, 60), 4.0, dtype=">f4")
+        obj, segm = sep_extract(data, thresh=5.0, var=var)
+        assert len(obj) >= 1
+
+    def test_numeric_mask_segmap_respects_maskthresh(self):
+        """Segmap must not erase pixels where numeric mask <= maskthresh."""
+        yy, xx = np.mgrid[:60, :60]
+        data = (
+            5.0 + 500.0 * np.exp(-((xx - 30.0) ** 2 + (yy - 30.0) ** 2) / 18.0)
+        ).astype(np.float32)
+        # mask=0.5 with maskthresh=1.0 means the source pixels are NOT masked
+        mask = np.full((60, 60), 0.5, dtype=np.float32)
+        obj, segm = sep_extract(data, thresh=5.0, mask=mask, maskthresh=1.0)
+        # Source should still be detected and segmap should be non-zero at peak
+        assert len(obj) >= 1
+        assert np.any(segm > 0)
+
+    def test_maxarea_rejects_large_central_object(self):
+        """Objects with npix > maxarea must be removed from obj and segmap."""
+        yy, xx = np.mgrid[:100, :100]
+        # Large source covering ~900 pixels (sigma=15)
+        data = (
+            5.0
+            + 2000.0 * np.exp(-((xx - 50.0) ** 2 + (yy - 50.0) ** 2) / (2 * 15.0**2))
+        ).astype(np.float32)
+        obj_all, _ = sep_extract(data, thresh=3.0)
+        assert len(obj_all) >= 1
+        large_npix = obj_all["npix"].max()
+
+        obj_filtered, segm_filtered = sep_extract(
+            data, thresh=3.0, maxarea=large_npix - 1
+        )
+        # The large central source should be rejected
+        assert len(obj_filtered) == 0 or obj_filtered["npix"].max() < large_npix
+        # Its label must be zeroed from the segmap
+        surviving_labels = (
+            set(obj_filtered["segm_label"].values) if len(obj_filtered) > 0 else set()
+        )
+        for label in set(np.unique(segm_filtered)) - {0}:
+            assert label in surviving_labels
+
+
+class TestSepExtractIterativeCorrectness:
+    """Tests for sep_extract_iterative correctness."""
+
+    def test_n_iter_1_finds_source(self):
+        """n_iter=1 must find a simple Gaussian source."""
+        yy, xx = np.mgrid[:80, :80]
+        data = (
+            10.0 + 800.0 * np.exp(-((xx - 40.0) ** 2 + (yy - 40.0) ** 2) / 18.0)
+        ).astype(np.float32)
+        obj, segm = sep_extract_iterative(data, thresh=5.0, n_iter=1)
+        assert len(obj) >= 1
+
+    def test_return_bkg_true(self):
+        """return_bkg=True must return a sep.Background as third element."""
+        import sep as sep_module
+
+        yy, xx = np.mgrid[:80, :80]
+        data = (
+            10.0 + 800.0 * np.exp(-((xx - 40.0) ** 2 + (yy - 40.0) ** 2) / 18.0)
+        ).astype(np.float32)
+        result = sep_extract_iterative(data, thresh=5.0, n_iter=1, return_bkg=True)
+        assert len(result) == 3
+        assert isinstance(result[2], sep_module.Background)
+
+    def test_ccddata_input(self):
+        """CCDData input must work end-to-end through sep_extract_iterative."""
+        from astropy.nddata import CCDData
+
+        yy, xx = np.mgrid[:80, :80]
+        data = (
+            10.0 + 800.0 * np.exp(-((xx - 40.0) ** 2 + (yy - 40.0) ** 2) / 18.0)
+        ).astype(np.float32)
+        ccd = CCDData(data, unit="adu")
+        obj, segm = sep_extract_iterative(ccd, thresh=5.0, n_iter=1)
+        assert len(obj) >= 1
+
+    def test_numeric_mask_respects_maskthresh(self):
+        """Numeric mask values below maskthresh must remain unmasked."""
+        data = np.zeros((30, 30), dtype=np.float32)
+        data[15, 15] = 10.0
+        mask = np.full(data.shape, 0.5, dtype=np.float32)
+
+        obj, segm = sep_extract_iterative(
+            data,
+            thresh=1.0,
+            mask=mask,
+            maskthresh=0.75,
+            n_iter=1,
+            minarea=1,
+            box_size=(16, 16),
+        )
+
+        assert len(obj) == 1
+        assert segm[15, 15] > 0
+
+    def test_seg_dilate_preserves_output_shape(self):
+        """seg_dilate > 0 must not crash and segmap shape must match data."""
+        yy, xx = np.mgrid[:80, :80]
+        data = (
+            10.0 + 800.0 * np.exp(-((xx - 40.0) ** 2 + (yy - 40.0) ** 2) / 18.0)
+        ).astype(np.float32)
+        obj, segm = sep_extract_iterative(data, thresh=5.0, n_iter=2, seg_dilate=3)
+        assert segm.shape == data.shape
+
+    def test_n_iter_0_raises(self):
+        """n_iter=0 must raise ValueError."""
+        import pytest
+
+        data = np.zeros((50, 50), dtype=np.float32)
+        with pytest.raises(ValueError):
+            sep_extract_iterative(data, thresh=1.0, n_iter=0)

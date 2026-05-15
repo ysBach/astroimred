@@ -12,7 +12,8 @@ from scipy.optimize import curve_fit
 
 from astroimred._core.astropy_helpers import Gaussian2D_correct
 from astroimred.external.sep import (
-    _sanitize_byteorder,
+    _as_sep_array,
+    _combine_masks,
     _sep_extract,
     sep_default_kernel,
     sep_extract,
@@ -242,7 +243,11 @@ def _center_sep(
         data, position, crad, return_dists=True
     )
     in_circ = dists <= crad
-    mask_cut = mask[cut_slices] | ~in_circ if mask is not None else ~in_circ
+    mask_cut = _combine_masks(
+        None if mask is None else mask[cut_slices],
+        ~in_circ,
+        kwargs.get("maskthresh", 0.0),
+    )
     err_cut = err[cut_slices] if err is not None else None
     var_cut = var[cut_slices] if var is not None else None
 
@@ -253,9 +258,9 @@ def _center_sep(
     obj, seg = _sep_extract(
         data_skysub,
         thresh=thresh,
-        mask=_sanitize_byteorder(mask_cut),
-        err=_sanitize_byteorder(err_cut),
-        var=_sanitize_byteorder(var_cut),
+        mask=_as_sep_array(mask_cut),
+        err=_as_sep_array(err_cut),
+        var=_as_sep_array(var_cut),
         minarea=minarea,
         seg_remove_mask=False,
         **kwargs,

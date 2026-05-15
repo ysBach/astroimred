@@ -11,6 +11,7 @@ from photutils.centroids import centroid_com
 
 from astroimred.phot.center import (
     GaussianConst2D,
+    center_sep,
     circular_bbox_cut,
     circular_slice,
     find_centroid,
@@ -419,6 +420,25 @@ class TestCenterEdgeCases:
         # Should converge toward the source center
         assert 45 <= result[0] <= 55
         assert 45 <= result[1] <= 55
+
+    def test_center_sep_numeric_mask_respects_maskthresh(self):
+        """Numeric mask values below maskthresh must not mask the source."""
+        yy, xx = np.mgrid[:40, :40]
+        data = (
+            5.0 + 100.0 * np.exp(-((xx - 20.0) ** 2 + (yy - 20.0) ** 2) / 8.0)
+        ).astype(np.float32)
+        mask = np.full(data.shape, 0.5, dtype=np.float32)
+
+        result = center_sep(
+            data,
+            (20, 20),
+            crad=5,
+            mask=mask,
+            maskthresh=0.75,
+            maxiters=1,
+        )
+
+        assert_allclose(result, [20.0, 20.0], atol=1.0)
 
     def test_find_centroid_uniform_image_may_fail(self, ccd_uniform):
         """Test find_centroid on uniform image may produce NaN or error."""
