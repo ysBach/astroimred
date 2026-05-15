@@ -6,3 +6,4 @@ from .numeric import *
 from .scales import *
 from .system import *
 from .types import *
+from .wcs import *
