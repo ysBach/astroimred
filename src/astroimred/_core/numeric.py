@@ -1,12 +1,20 @@
 """Standalone array math helpers."""
 
+import importlib.util
 from collections.abc import Callable
 
 import numpy as np
 
+_numba_available = importlib.util.find_spec("numba") is not None
+_sstd_nan_1d_nb = None
+
 __all__ = [
     "sstd",
-    "weighted_avg",
+    "sqsum",
+    "quad_sum",
+    "magsum",
+    "normalize",
+    "wvg",
     "quantile_lh",
     "quantile_sigma",
     "min_max_med_1d",
@@ -17,38 +25,239 @@ __all__ = [
 ]
 
 
-def sstd(a: np.ndarray, **kwargs) -> np.ndarray:
-    """Return the sample standard deviation."""
-    return np.std(a, ddof=1, **kwargs)
+def _get_sstd_nan_1d_nb():
+    global _sstd_nan_1d_nb
+    if _sstd_nan_1d_nb is None:
+        import numba as nb
+
+        @nb.njit
+        def _kernel(arr, ddof):
+            count = 0
+            mean = 0.0
+            m2 = 0.0
+            for value in arr:
+                if not np.isnan(value):
+                    count += 1
+                    delta = value - mean
+                    mean += delta / count
+                    m2 += delta * (value - mean)
+            if count <= ddof:
+                return count, np.nan
+            return count, np.sqrt(m2 / (count - ddof))
+
+        _sstd_nan_1d_nb = _kernel
+    return _sstd_nan_1d_nb
 
 
-def weighted_avg(
-    val: np.ndarray,
-    err: np.ndarray,
+def sstd(
+    a: np.ndarray,
+    ddof: int = 1,
     axis: int | tuple[int, ...] | None = None,
-) -> tuple[np.ndarray, np.ndarray]:
-    """Return the inverse-variance weighted mean and standard error.
+    nan: bool = False,
+    **kwargs: object,
+) -> np.ndarray:
+    """Return standard deviation, optionally ignoring NaNs.
+
+    ``nan=True`` ignores NaNs. For flattened arrays, a lazy optional Numba
+    kernel is used when available; axis-aware calculations use `numpy.nanstd`.
+    """
+    if not nan:
+        return np.std(a, ddof=ddof, axis=axis, **kwargs)
+
+    arr = np.asarray(a)
+    count = np.sum(~np.isnan(arr), axis=axis)
+    if np.any(np.asarray(count) <= ddof):
+        return np.array([], dtype=float)
+
+    if axis is None and _numba_available:
+        _, std = _get_sstd_nan_1d_nb()(np.ravel(arr).astype(float), ddof)
+        return std
+
+    return np.nanstd(arr, ddof=ddof, axis=axis, **kwargs)
+
+
+def sqsum(*args: object) -> object:
+    """Return the sum of squares of all inputs."""
+    total = 0
+    for arg in args:
+        total += arg**2
+    return total
+
+
+def quad_sum(*args: object) -> object:
+    """Return the square root of `sqsum(*args)`."""
+    return np.sqrt(sqsum(*args))
+
+
+def magsum(*args: object) -> object:
+    """Return the flux-equivalent sum of astronomical magnitudes."""
+    return -2.5 * np.log10(np.sum(10 ** (-0.4 * np.array(args))))
+
+
+def normalize(
+    num: float, lower: float = 0, upper: float = 360, b: bool = False
+) -> float:
+    """Normalize number to range [lower, upper) or [lower, upper].
 
     Parameters
     ----------
-    val, err : array-like
-        Values and 1-sigma uncertainties. Weights are calculated as
-        ``1 / err**2``.
-    axis : int, tuple of int, or None, optional
-        Axis or axes along which to combine. If `None`, combine all values.
+    num : float
+        The number to be normalized.
+
+    lower, upper : numeric
+        Lower/upper limit of range. Default: ``0`` and ``360``.
+
+    b : bool
+        Type of normalization. Default is `False`. See notes. When b=True, the
+        range must be symmetric about 0. When b=False, the range must be
+        symmetric about 0 or ``lower`` must be equal to 0.
 
     Returns
     -------
-    mean, stderr : ndarray
-        Weighted mean and its standard error.
+    n : float
+        A number in the range [lower, upper) or [lower, upper].
+
+    Raises
+    ------
+    ValueError
+      If lower >= upper.
+
+    Notes
+    -----
+    From phn: https://github.com/phn/angles
+
+    If the keyword `b == False`, then the normalization is done in the
+    following way. Consider the numbers to be arranged in a circle, with the
+    lower and upper ends sitting on top of each other. Moving past one limit,
+    takes the number into the beginning of the other end. For example, if range
+    is [0 - 360), then 361 becomes 1 and 360 becomes 0. Negative numbers move
+    from higher to lower numbers. So, -1 normalized to [0 - 360) becomes 359.
+    When b=False range must be symmetric about 0 or lower=0. If the keyword `b
+    == True`, then the given number is considered to "bounce" between the two
+    limits. So, -91 normalized to [-90, 90], becomes -89, instead of 89. In
+    this case the range is [lower, upper]. This code is based on the function
+    `fmt_delta` of `TPM`. When b=True range must be symmetric about 0.
+
+    Examples
+    --------
+    >>> normalize(-270,-180,180)
+    90.0
+    >>> import math
+    >>> math.degrees(normalize(-2*math.pi,-math.pi,math.pi))
+    0.0
+    >>> normalize(-180, -180, 180)
+    -180.0
+    >>> normalize(180, -180, 180)
+    -180.0
+    >>> normalize(180, -180, 180, b=True)
+    180.0
+    >>> normalize(181,-180,180)
+    -179.0
+    >>> normalize(181, -180, 180, b=True)
+    179.0
+    >>> normalize(-180,0,360)
+    180.0
+    >>> normalize(36,0,24)
+    12.0
+    >>> normalize(368.5,-180,180)
+    8.5
+    >>> normalize(-100, -90, 90)
+    80.0
+    >>> normalize(-100, -90, 90, b=True)
+    -80.0
+    >>> normalize(100, -90, 90, b=True)
+    80.0
+    >>> normalize(181, -90, 90, b=True)
+    -1.0
+    >>> normalize(270, -90, 90, b=True)
+    -90.0
+    >>> normalize(271, -90, 90, b=True)
+    -89.0
+    """
+    if lower >= upper:
+        raise ValueError("lower must be lesser than upper")
+    if not b:
+        if not ((lower + upper == 0) or (lower == 0)):
+            raise ValueError("When b=False lower=0 or range must be symmetric about 0.")
+    else:
+        if not (lower + upper == 0):
+            raise ValueError("When b=True range must be symmetric about 0.")
+
+    from math import ceil, floor
+
+    res = num
+    if not b:
+        if num > upper or num == lower:
+            num = lower + abs(num + upper) % (abs(lower) + abs(upper))
+        if num < lower or num == upper:
+            num = upper - abs(num - lower) % (abs(lower) + abs(upper))
+
+        res = lower if num == upper else num
+    else:
+        total_length = abs(lower) + abs(upper)
+        if num < -total_length:
+            num += ceil(num / (-2 * total_length)) * 2 * total_length
+        if num > total_length:
+            num -= floor(num / (2 * total_length)) * 2 * total_length
+        if num > upper:
+            num = total_length - num
+        if num < lower:
+            num = -total_length - num
+
+        res = num
+
+    res *= 1.0
+
+    return res
+
+
+def wvg(
+    val: np.ndarray,
+    err: np.ndarray | None = None,
+    var: np.ndarray | None = None,
+    ivar: np.ndarray | None = None,
+    axis: int | tuple[int, ...] | None = None,
+    return_se: bool = False,
+) -> np.ndarray | tuple[np.ndarray, np.ndarray]:
+    """Return the inverse-variance weighted mean.
+
+    Parameters
+    ----------
+    val : array-like
+        Values to average.
+    err, var, ivar : array-like, optional
+        Supply exactly one uncertainty representation: 1-sigma error,
+        variance, or inverse variance. The code prefers ivar > var > err when
+        multiple are given (because ivar is the most directly useful for
+        weighting, and ivar = 1/var = 1/err^2).
+    axis : int, tuple of int, or None, optional
+        Axis or axes along which to combine. If `None`, combine all values.
+    return_se : bool, optional
+        If `True`, also return the weighted standard error (``sqrt(1/sum(ivar,
+        axis=axis))``).
+
+    Returns
+    -------
+    mean or (mean, stderr)
+        Weighted mean, optionally with standard error.
     """
     val = np.asarray(val)
-    err = np.asarray(err)
-    w = 1 / (err**2)
-    wsum = np.sum(w, axis=axis)
-    wvg = np.sum(w * val, axis=axis) / wsum
-    wse = 1 / np.sqrt(wsum)
-    return wvg, wse
+    provided = sum(x is not None for x in (err, var, ivar))
+    if provided != 1:
+        raise ValueError("Exactly one of err, var, or ivar must be provided.")
+
+    if ivar is not None:
+        weight = np.asarray(ivar)
+    elif var is not None:
+        weight = 1 / np.asarray(var)
+    else:
+        weight = 1 / (np.asarray(err) ** 2)
+
+    wsum = np.sum(weight, axis=axis)
+    mean = np.sum(weight * val, axis=axis) / wsum
+    if return_se:
+        return mean, 1 / np.sqrt(wsum)
+    return mean
 
 
 def quantile_lh(

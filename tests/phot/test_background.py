@@ -10,8 +10,8 @@ from astropy.nddata import CCDData
 from numpy.testing import assert_allclose
 from photutils.aperture import CircularAnnulus, EllipticalAnnulus
 
+from astroimred._core.astropy_helpers import sigma_clipper
 from astroimred.phot.background import annul2values, mmm_dao, quick_sky_circ, sky_fit
-from astroimred.phot.util import sigma_clipper
 
 from . import STAR_1_2
 
@@ -150,6 +150,28 @@ class TestAnnul2Values:
         vals_nomask = annul2values(uniform_100x100, an, mask=None)
 
         assert len(vals_masked[0]) <= len(vals_nomask[0])
+
+    def test_annul2values_edge_circular_matches_photutils_mask(self):
+        """Fast circular path clips off-frame masks consistently."""
+        data = np.arange(180, dtype=float).reshape(3, 60)
+        an = CircularAnnulus(positions=(1.2, 1.3), r_in=10, r_out=20)
+
+        vals = annul2values(data, an, mask=None)
+        expected = an.to_mask(method="center").get_values(data)
+
+        assert_allclose(np.sort(vals[0]), np.sort(expected))
+
+    def test_annul2values_edge_elliptical_clips_without_shape_mismatch(self):
+        """Fast elliptical path clips off-frame masks before indexing."""
+        data = np.arange(300, dtype=float).reshape(6, 50)
+        an = EllipticalAnnulus(
+            positions=(2.5, 1.5), a_in=8, a_out=16, b_out=9, theta=0.3
+        )
+
+        vals = annul2values(data, an, mask=None)
+
+        assert vals[0].size > 0
+        assert np.isin(vals[0], data).all()
 
 
 # =============================================================================

@@ -8,9 +8,8 @@ from astropy.io import fits
 from astropy.nddata import CCDData
 from astropy.time import Time
 
-from .._core.time import str_now
+from .._core.astropy_helpers import as_quantity, str_now
 from .._core.types import HDULike, HDULike_types, StrPathLike
-from .._core.units import as_quantity
 from ..logging import logger
 from . import io as _io
 

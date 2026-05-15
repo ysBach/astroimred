@@ -13,7 +13,7 @@ from astropy.io import fits
 
 import astroimred as air
 from astroimred import logging as airlogging
-from astroimred._core import geometry, numeric, time, units
+from astroimred._core import astropy_helpers, geometry, numeric
 from astroimred.fitsmgmt import header, io, table
 from astroimred.imutil import ccdops
 
@@ -53,9 +53,11 @@ def test_heavy_tools_importable_directly():
 
 
 def test_subpackage_attributes():
-    """air.imutil and air.fitsmgmt are accessible as subpackage attributes."""
+    """Public subpackages are accessible as package attributes."""
     assert air.imutil is import_module("astroimred.imutil")
     assert air.fitsmgmt is import_module("astroimred.fitsmgmt")
+    assert air.phot is import_module("astroimred.phot")
+    assert air.viz is import_module("astroimred.viz")
     assert air.fitsmgmt.io is import_module("astroimred.fitsmgmt.io")
     assert air.imutil.ccdops is import_module("astroimred.imutil.ccdops")
 
@@ -154,13 +156,13 @@ def test_listify():
 
 
 def test_str_now():
-    assert len(time.str_now()) > 0
+    assert len(astropy_helpers.str_now()) > 0
 
 
 def test_as_quantity():
-    q1 = units.as_quantity(10, "km")
+    q1 = astropy_helpers.as_quantity(10, "km")
     assert q1.value == 10.0 and q1.unit == u.km
-    q2 = units.as_quantity(10 * u.m, "km")
+    q2 = astropy_helpers.as_quantity(10 * u.m, "km")
     assert q2.value == 0.01 and q2.unit == u.km
 
 

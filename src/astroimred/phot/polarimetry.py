@@ -13,7 +13,8 @@ Primitive naming: ``<lin/circ/all>_<oe/sr>_<n>set``
 
 import numpy as np
 
-from .util import convert_deg, convert_pct, err_prop
+from astroimred._core.numeric import quad_sum
+from astroimred._core.scales import degree_scale, percent_scale
 
 __all__ = [
     "calc_stokes",
@@ -246,19 +247,21 @@ def calc_qu_4set(
         The q, u values and their errors. The unit can be natural (if `out_pct`
         is `False`) or percentage (if `out_pct` is `True`).
     """
-    s_000 = err_prop(de_000 / e_000, do_000 / o_000)
-    s_450 = err_prop(de_450 / e_450, do_450 / o_450)
-    s_225 = err_prop(de_225 / e_225, do_225 / o_225)
-    s_675 = err_prop(de_675 / e_675, do_675 / o_675)
+    s_000 = quad_sum(de_000 / e_000, do_000 / o_000)
+    s_450 = quad_sum(de_450 / e_450, do_450 / o_450)
+    s_225 = quad_sum(de_225 / e_225, do_225 / o_225)
+    s_675 = quad_sum(de_675 / e_675, do_675 / o_675)
 
     rq = np.sqrt((e_000 / o_000) / (e_450 / o_450))
     ru = np.sqrt((e_225 / o_225) / (e_675 / o_675))
     sign = 1 if eminuso else -1
     q = sign * (rq - 1) / (rq + 1)
     u = sign * (ru - 1) / (ru + 1)
-    dq = (rq / (rq + 1) ** 2) * err_prop(s_000, s_450)
-    du = (ru / (ru + 1) ** 2) * err_prop(s_225, s_675)
-    q, u, dq, du = convert_pct(q, u, dq, du, already=False, convert2unit=out_pct)
+    dq = (rq / (rq + 1) ** 2) * quad_sum(s_000, s_450)
+    du = (ru / (ru + 1) ** 2) * quad_sum(s_225, s_675)
+    q, u, dq, du = percent_scale(
+        q, u, dq, du, input_percent=False, output_percent=out_pct
+    )
     return q, u, dq, du
 
 
@@ -301,18 +304,18 @@ def correct_eff(
         errors. The unit can be natural (if `out_pct` is `False`) or percentage
         (if `out_pct` is `True`).
     """
-    q, dq, u, du, p_eff, dp_eff = convert_pct(
-        q, dq, u, du, p_eff, dp_eff, already=in_pct, convert2unit=False
+    q, dq, u, du, p_eff, dp_eff = percent_scale(
+        q, dq, u, du, p_eff, dp_eff, input_percent=in_pct, output_percent=False
     )
 
     q_eff = q / p_eff
     u_eff = u / p_eff
 
-    dq_eff = np.abs(q_eff) * err_prop(dq / q, dp_eff / p_eff)
-    du_eff = np.abs(u_eff) * err_prop(du / u, dp_eff / p_eff)
+    dq_eff = np.abs(q_eff) * quad_sum(dq / q, dp_eff / p_eff)
+    du_eff = np.abs(u_eff) * quad_sum(du / u, dp_eff / p_eff)
 
-    q_eff, u_eff, dq_eff, du_eff = convert_pct(
-        q_eff, u_eff, dq_eff, du_eff, already=False, convert2unit=out_pct
+    q_eff, u_eff, dq_eff, du_eff = percent_scale(
+        q_eff, u_eff, dq_eff, du_eff, input_percent=False, output_percent=out_pct
     )
     return q_eff, u_eff, dq_eff, du_eff
 
@@ -371,10 +374,19 @@ def correct_off(
     -----
     Assumed: rotator angle (INSROT-like value) is assumed to have zero error.
     """
-    q, dq, u, du, q_off, dq_off, u_off, du_off = convert_pct(
-        q, dq, u, du, q_off, dq_off, u_off, du_off, already=in_pct, convert2unit=False
+    q, dq, u, du, q_off, dq_off, u_off, du_off = percent_scale(
+        q,
+        dq,
+        u,
+        du,
+        q_off,
+        dq_off,
+        u_off,
+        du_off,
+        input_percent=in_pct,
+        output_percent=False,
     )
-    rot_q, rot_u = convert_deg(rot_q, rot_u, already=in_deg, convert2unit=False)
+    rot_q, rot_u = degree_scale(rot_q, rot_u, input_degree=in_deg, output_degree=False)
 
     cos2q = np.cos(2 * rot_q)
     sin2q = np.sin(2 * rot_q)
@@ -383,11 +395,11 @@ def correct_off(
     q_rot = q - (cos2q * q_off - sin2q * u_off)
     u_rot = u - (cos2u * q_off - sin2u * u_off)
 
-    dq_rot = err_prop(dq, cos2q * dq_off, sin2q * du_off)
-    du_rot = err_prop(du, cos2u * dq_off, sin2u * du_off)
+    dq_rot = quad_sum(dq, cos2q * dq_off, sin2q * du_off)
+    du_rot = quad_sum(du, cos2u * dq_off, sin2u * du_off)
 
-    q_rot, u_rot, dq_rot, du_rot = convert_pct(
-        q_rot, u_rot, dq_rot, du_rot, already=False, convert2unit=out_pct
+    q_rot, u_rot, dq_rot, du_rot = percent_scale(
+        q_rot, u_rot, dq_rot, du_rot, input_percent=False, output_percent=out_pct
     )
     return q_rot, u_rot, dq_rot, du_rot
 
@@ -456,9 +468,11 @@ def correct_pa(
         errors. The unit can be natural (if `out_pct` is `False`) or percentage
         (if `out_pct` is `True`).
     """
-    q, dq, u, du = convert_pct(q, dq, u, du, already=in_pct, convert2unit=False)
-    pa_off, dpa_off, pa_obs = convert_deg(
-        pa_off, dpa_off, pa_obs, already=in_deg, convert2unit=False
+    q, dq, u, du = percent_scale(
+        q, dq, u, du, input_percent=in_pct, output_percent=False
+    )
+    pa_off, dpa_off, pa_obs = degree_scale(
+        pa_off, dpa_off, pa_obs, input_degree=in_deg, output_degree=False
     )
 
     sign = 1 if pa_ccw else -1
@@ -468,15 +482,15 @@ def correct_pa(
     q_inst = cos2o * q + sin2o * u
     u_inst = -sin2o * q + cos2o * u
 
-    dq_inst = err_prop(
+    dq_inst = quad_sum(
         cos2o * dq, sin2o * du, 2 * sin2o * q * dpa_off, 2 * cos2o * u * dpa_off
     )
-    du_inst = err_prop(
+    du_inst = quad_sum(
         sin2o * dq, cos2o * du, 2 * cos2o * q * dpa_off, 2 * sin2o * u * dpa_off
     )
 
-    q_inst, u_inst, dq_inst, du_inst = convert_pct(
-        q_inst, u_inst, dq_inst, du_inst, already=False, convert2unit=out_pct
+    q_inst, u_inst, dq_inst, du_inst = percent_scale(
+        q_inst, u_inst, dq_inst, du_inst, input_percent=False, output_percent=out_pct
     )
     return q_inst, u_inst, dq_inst, du_inst
 
@@ -523,14 +537,16 @@ def calc_pol(
         unit can be natural (if `out_pct` or `out_deg` is/are `False`) or
         percentage/degree (if `out_pct` or `out_deg` is/are `True`).
     """
-    q, dq, u, du = convert_pct(q, dq, u, du, already=in_pct, convert2unit=False)
+    q, dq, u, du = percent_scale(
+        q, dq, u, du, input_percent=in_pct, output_percent=False
+    )
     pol = np.sqrt(q**2 + u**2)
-    dpol = err_prop(q * dq, u * du) / pol
+    dpol = quad_sum(q * dq, u * du) / pol
     thp = 0.5 * np.arctan2(u, q)
-    dthp = err_prop(q * du, u * dq) / (2 * pol**2)
+    dthp = quad_sum(q * du, u * dq) / (2 * pol**2)
 
-    pol, dpol = convert_pct(pol, dpol, already=False, convert2unit=out_pct)
-    thp, dthp = convert_deg(thp, dthp, already=False, convert2unit=out_deg)
+    pol, dpol = percent_scale(pol, dpol, input_percent=False, output_percent=out_pct)
+    thp, dthp = degree_scale(thp, dthp, input_degree=False, output_degree=out_deg)
     return pol, thp, dpol, dthp
 
 
@@ -581,9 +597,14 @@ def calc_pol_r(
         the "scattering plane normal vector" to the strongest E-field vector,
         North to East direction), and their errors.
     """
-    pol, dpol = convert_pct(pol, dpol, already=in_pct, convert2unit=False)
-    thp, dthp, suntargetpa, dsuntargetpa = convert_deg(
-        thp, dthp, suntargetpa, dsuntargetpa, already=in_deg, convert2unit=False
+    pol, dpol = percent_scale(pol, dpol, input_percent=in_pct, output_percent=False)
+    thp, dthp, suntargetpa, dsuntargetpa = degree_scale(
+        thp,
+        dthp,
+        suntargetpa,
+        dsuntargetpa,
+        input_degree=in_deg,
+        output_degree=False,
     )
     thr = thp + suntargetpa
     # if np.array(thr).size == 1:
@@ -595,10 +616,12 @@ def calc_pol_r(
     cos2r = np.cos(2 * thr)
     sin2r = np.sin(2 * thr)
     polr = pol * cos2r
-    dpolr = np.max([err_prop(dpol * cos2r, pol * (-2 * sin2r) * dthp), dpol], axis=0)
-    dthr = err_prop(dthp, dsuntargetpa)
-    polr, dpolr = convert_pct(polr, dpolr, already=False, convert2unit=out_pct)
-    thr, dthr = convert_deg(thr, dthr, already=False, convert2unit=out_deg)
+    dpolr = np.max([quad_sum(dpol * cos2r, pol * (-2 * sin2r) * dthp), dpol], axis=0)
+    dthr = quad_sum(dthp, dsuntargetpa)
+    polr, dpolr = percent_scale(
+        polr, dpolr, input_percent=False, output_percent=out_pct
+    )
+    thr, dthr = degree_scale(thr, dthr, input_degree=False, output_degree=out_deg)
 
     return polr, thr, dpolr, dthr
 
@@ -613,16 +636,16 @@ class PolObjMixin:
             self.r675 = self.i675_e / self.i675_o
 
             # noise-to-signal (dr/r) of I_e/I_o for each HWP angle
-            self.ns000 = err_prop(
+            self.ns000 = quad_sum(
                 self.di000_e / self.i000_e, self.di000_o / self.i000_o
             )
-            self.ns450 = err_prop(
+            self.ns450 = quad_sum(
                 self.di450_e / self.i450_e, self.di450_o / self.i450_o
             )
-            self.ns225 = err_prop(
+            self.ns225 = quad_sum(
                 self.di225_e / self.i225_e, self.di225_o / self.i225_o
             )
-            self.ns675 = err_prop(
+            self.ns675 = quad_sum(
                 self.di675_e / self.i675_e, self.di675_o / self.i675_o
             )
 
@@ -633,8 +656,8 @@ class PolObjMixin:
             self.u0 = (self.r_u - 1) / (self.r_u + 1)
 
             # The errors
-            s_q = err_prop(self.ns000, self.ns450)
-            s_u = err_prop(self.ns225, self.ns675)
+            s_q = quad_sum(self.ns000, self.ns450)
+            s_u = quad_sum(self.ns225, self.ns675)
             self.dq0 = self.r_q / (self.r_q + 1) ** 2 * s_q
             self.du0 = self.r_u / (self.r_u + 1) ** 2 * s_u
         else:
@@ -866,31 +889,31 @@ class LinPolOE4(PolObjMixin):
 
         self.q1 = self.q0 / self.p_eff
         self.u1 = self.u0 / self.p_eff
-        self.dq1 = err_prop(self.dq0, np.abs(self.q1) * self.dp_eff) / self.p_eff
-        self.du1 = err_prop(self.du0, np.abs(self.u1) * self.dp_eff) / self.p_eff
+        self.dq1 = quad_sum(self.dq0, np.abs(self.q1) * self.dp_eff) / self.p_eff
+        self.du1 = quad_sum(self.du0, np.abs(self.u1) * self.dp_eff) / self.p_eff
 
         rotq = (np.cos(2 * self.rot_instq), np.sin(2 * self.rot_instq))
         rotu = (np.cos(2 * self.rot_instu), np.sin(2 * self.rot_instu))
         self.q2 = self.q1 - (self.q_inst * rotq[0] - self.u_inst * rotq[1])
         self.u2 = self.u1 - (self.q_inst * rotu[1] + self.u_inst * rotu[0])
-        # dq_inst_rot = err_prop(self.dq_inst*rotq[0], self.du_inst*rotq[1])
-        # du_inst_rot = err_prop(self.dq_inst*rotu[1], self.du_inst*rotu[0])
-        self.dq2 = err_prop(self.dq1, self.dq_inst * rotq[0], self.du_inst * rotq[1])
-        self.du2 = err_prop(self.du1, self.dq_inst * rotu[1], self.du_inst * rotu[0])
+        # dq_inst_rot = quad_sum(self.dq_inst*rotq[0], self.du_inst*rotq[1])
+        # du_inst_rot = quad_sum(self.dq_inst*rotu[1], self.du_inst*rotu[0])
+        self.dq2 = quad_sum(self.dq1, self.dq_inst * rotq[0], self.du_inst * rotq[1])
+        self.du2 = quad_sum(self.du1, self.dq_inst * rotu[1], self.du_inst * rotu[0])
 
         theta = self.theta_inst - self.pa_inst
         rot = (np.cos(2 * theta), np.sin(2 * theta))
         self.q3 = +1 * self.q2 * rot[0] + self.u2 * rot[1]
         self.u3 = -1 * self.q2 * rot[1] + self.u2 * rot[0]
-        self.dq3 = err_prop(
+        self.dq3 = quad_sum(
             rot[0] * self.dq2, rot[1] * self.du2, 2 * self.u3 * dtheta_inst
         )
-        self.du3 = err_prop(
+        self.du3 = quad_sum(
             rot[1] * self.dq2, rot[0] * self.du2, 2 * self.q3 * dtheta_inst
         )
 
         self.pol = np.sqrt(self.q3**2 + self.u3**2)
-        self.dpol = err_prop(self.q3 * self.dq3, self.u3 * self.du3) / self.pol
+        self.dpol = quad_sum(self.q3 * self.dq3, self.u3 * self.du3) / self.pol
         self.theta = 0.5 * np.arctan2(self.u3, self.q3)
         self.dtheta = 0.5 * self.dpol / self.pol
 

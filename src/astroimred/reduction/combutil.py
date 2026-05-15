@@ -16,7 +16,7 @@ from astropy.table import Table
 from astropy.time import Time
 from ccdproc import combine
 
-from astroimred._core.numeric import sstd, weighted_avg
+from astroimred._core.numeric import sstd, wvg
 from astroimred._core.types import HDUExt, StrPathLike
 from astroimred.fitsmgmt.header import cmt2hdr
 from astroimred.fitsmgmt.io import _parse_extension, load_ccd
@@ -59,7 +59,7 @@ def weighted_mean(
             raise ValueError("All CCDs must have uncertainty arrays.")
         datas.append(ccd.data)
         errs.append(ccd.uncertainty.array)
-    wmean, wuncert = weighted_avg(np.array(datas), np.array(errs), axis=0)
+    wmean, wuncert = wvg(np.array(datas), err=np.array(errs), axis=0, return_se=True)
     nccd = CCDData(data=wmean, header=ccds[0].header, unit=unit)
     nccd.uncertainty = StdDevUncertainty(wuncert)
     return nccd

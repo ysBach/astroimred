@@ -22,6 +22,8 @@ __all__ = [
     "circular_mask",
     "circular_mask_2d",
     "enclosing_circle_radius",
+    "mask_enclosing_circle_radius",
+    "bezel_mask",
 ]
 
 
@@ -51,10 +53,10 @@ def sigclip_dataerr(
         Maximum clipping iterations.
     """
     if cenfunc == "wvg":
-        from .._core.numeric import weighted_avg
+        from .._core.numeric import wvg
 
         def cenfunc(val, err):
-            return weighted_avg(val, err)[0]
+            return wvg(val, err=err)
     elif cenfunc in ["avg", "average", "mean"]:
 
         def cenfunc(val, err):
@@ -345,3 +347,56 @@ def enclosing_circle_radius(
         _enclosing_circle_radius_numpy(segm, center, segm_id, radii)
 
     return radii
+
+
+def mask_enclosing_circle_radius(
+    mask: np.ndarray,
+    center: tuple[float, float] | None = None,
+) -> float:
+    """Return the radius enclosing all non-zero pixels in a binary mask."""
+    y, x = np.nonzero(mask)
+
+    if len(x) == 0 or len(y) == 0:
+        return 0.0
+
+    if center is None:
+        center = (float(np.mean(x)), float(np.mean(y)))
+
+    distances = np.sqrt((x - center[0]) ** 2 + (y - center[1]) ** 2)
+    return float(np.max(distances))
+
+
+def bezel_mask(
+    xvals,
+    yvals,
+    nx,
+    ny,
+    bezel=(0, 0),
+    bezel_x=None,
+    bezel_y=None,
+) -> np.ndarray:
+    """Return mask for positions inside the image border bezel."""
+    bezel = np.array(bezel)
+    if len(bezel) == 1:
+        bezel = np.repeat(bezel, 2)
+
+    if bezel_x is None:
+        bezel_x = bezel.copy()
+    else:
+        bezel_x = np.atleast_1d(bezel_x)
+        if len(bezel_x) == 1:
+            bezel_x = np.repeat(bezel_x, 2)
+
+    if bezel_y is None:
+        bezel_y = bezel.copy()
+    else:
+        bezel_y = np.atleast_1d(bezel_y)
+        if len(bezel_y) == 1:
+            bezel_y = np.repeat(bezel_y, 2)
+
+    return (
+        (xvals < bezel_x[0] + 0.5)
+        | (yvals < bezel_y[0] + 0.5)
+        | (xvals > (nx - bezel_x[1]) - 0.5)
+        | (yvals > (ny - bezel_y[1]) - 0.5)
+    )

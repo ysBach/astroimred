@@ -4,8 +4,9 @@ import numpy as np
 from astropy.nddata import CCDData
 from astropy.table import Table
 
+from astroimred._core.astropy_helpers import sigma_clipper
+
 from .aputil import fast_circ_anmask, fast_ellip_anmask
-from .util import sigma_clipper
 
 __all__ = ["quick_sky_circ", "sky_fit", "annul2values", "mmm_dao"]
 
@@ -92,12 +93,12 @@ def sky_fit(
         array of sky values. The returned array must be a plain ndarray with
         no NaN values — clipped elements should be removed, not replaced with
         NaN — because `_sky_fit` uses ``np.std``/``np.mean``/``np.median``
-        directly on the result. `~astroimred.phot.util.sigma_clipper` (the
+        directly on the result. `~astroimred._core.astropy_helpers.sigma_clipper` (the
         default) satisfies this by wrapping ``astropy.stats.sigma_clip`` with
         ``masked=False``, which physically removes clipped values.
         If `None`, no clipping will be applied
         (i.e., ``lambda x: x[~np.isnan(x)]`` is used).
-        The default is `astroimred.phot.util.sigma_clipper`.
+        The default is `astroimred._core.astropy_helpers.sigma_clipper`.
 
     std_ddof : int, optional
         The "delta-degrees of freedom" for sky standard deviation calculation.

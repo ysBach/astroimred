@@ -3,7 +3,7 @@
 import numpy as np
 import pytest
 
-from astroimred._core import geometry, time, units
+from astroimred._core import astropy_helpers, geometry
 
 # Strict tolerance for numerical comparisons
 RTOL = 1e-6
@@ -21,6 +21,7 @@ class TestMovedHelpers:
         """Moved math helpers are not re-exported from geometry."""
         assert not hasattr(geometry, "sstd")
         assert not hasattr(geometry, "weighted_avg")
+        assert not hasattr(geometry, "wvg")
         assert not hasattr(geometry, "min_max_med_1d")
         assert not hasattr(geometry, "mean_std_1d")
         assert not hasattr(geometry, "quantile_lh")
@@ -103,13 +104,13 @@ class TestStrNow:
 
     def test_returns_string(self):
         """Test that str_now returns a string."""
-        result = time.str_now()
+        result = astropy_helpers.str_now()
         assert isinstance(result, str)
 
     def test_precision(self):
         """Test precision parameter affects output."""
-        result_low = time.str_now(precision=0)
-        result_high = time.str_now(precision=6)
+        result_low = astropy_helpers.str_now(precision=0)
+        result_high = astropy_helpers.str_now(precision=6)
         # Higher precision should result in longer string
         # (more decimal places in seconds)
         # Both should be valid ISO format times
@@ -117,14 +118,14 @@ class TestStrNow:
         assert "T" in result_high
 
 
-class TestChangeToQuantity:
+class TestAsQuantity:
     """Tests for as_quantity function."""
 
     def test_float_to_quantity(self):
         """Test converting `float` to `~astropy.units.Quantity`."""
         from astropy import units as u
 
-        result = units.as_quantity(5.0, u.m, to_value=False)
+        result = astropy_helpers.as_quantity(5.0, u.m, to_value=False)
         assert hasattr(result, "unit")
         assert result.value == 5.0
 
@@ -133,7 +134,7 @@ class TestChangeToQuantity:
         from astropy import units as u
 
         q = 5.0 * u.m
-        result = units.as_quantity(q, u.m, to_value=False)
+        result = astropy_helpers.as_quantity(q, u.m, to_value=False)
         assert result.value == 5.0
         assert result.unit == u.m
 
@@ -141,5 +142,5 @@ class TestChangeToQuantity:
         """Test extracting value from `~astropy.units.Quantity`."""
         from astropy import units as u
 
-        result = units.as_quantity(5.0 * u.km, u.m, to_value=True)
+        result = astropy_helpers.as_quantity(5.0 * u.km, u.m, to_value=True)
         np.testing.assert_allclose(result, 5000.0, rtol=RTOL, atol=ATOL)

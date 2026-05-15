@@ -34,7 +34,8 @@ import pandas as pd
 import sep
 from astropy.nddata import CCDData, support_nddata
 
-from .util import bezel_mask, gaussian_kernel
+from astroimred._core.astropy_helpers import gaussian_kernel
+from astroimred._core.geometry import bezel_mask
 
 __all__ = ["sep_back", "sep_extract", "sep_extract_iterative", "sep_flux_auto"]
 

@@ -1,35 +1,26 @@
-"""
-Tests for astroimred.phot.util module.
-
-All expected values are analytically derived.
-"""
+"""Tests for core utility helpers with analytically derived expected values."""
 
 import numpy as np
 import pytest
 from astropy.modeling.functional_models import Gaussian2D
 from numpy.testing import assert_allclose, assert_array_equal
 
-from astroimred.phot.util import (
+from astroimred._core.astropy_helpers import (
     Gaussian2D_correct,
-    bezel_mask,
-    convert_deg,
-    convert_pct,
-    err_prop,
     gaussian_kernel,
-    magsum,
-    normalize,
-    sample_std,
     sigma_clipper,
-    sqsum,
 )
+from astroimred._core.geometry import bezel_mask
+from astroimred._core.numeric import magsum, normalize, quad_sum, sqsum, sstd
+from astroimred._core.scales import degree_scale, percent_scale
 
 
-class TestSampleStd:
-    """Tests for sample_std function."""
+class TestSstd:
+    """Tests for sstd function."""
 
-    def test_sample_std_ddof0(self, simple_array_for_std):
+    def test_sstd_ddof0(self, simple_array_for_std):
         """
-        Test sample_std with ddof=0 (population std).
+        Test sstd with ddof=0 (population std).
 
         Array: [1, 2, 3, 4, 5]
         Mean = 3
@@ -38,28 +29,28 @@ class TestSampleStd:
         Std = sqrt(2) = 1.4142135...
         """
         expected = np.sqrt(2.0)
-        result = sample_std(simple_array_for_std, ddof=0)
+        result = sstd(simple_array_for_std, ddof=0, nan=True)
         assert_allclose(result, expected, rtol=1e-10)
 
-    def test_sample_std_ddof1(self, simple_array_for_std):
+    def test_sstd_ddof1(self, simple_array_for_std):
         """
-        Test sample_std with ddof=1 (sample std).
+        Test sstd with ddof=1 (sample std).
 
         Array: [1, 2, 3, 4, 5], n=5
         Sample variance = 10 / (5-1) = 2.5
         Sample std = sqrt(2.5) = 1.5811388...
 
-        But sample_std uses: sqrt(n/(n-ddof)) * nanstd
+        But sstd(..., nan=True) uses: sqrt(n/(n-ddof)) * nanstd
         nanstd with default ddof=0 gives sqrt(2)
         So: sqrt(5/4) * sqrt(2) = sqrt(5/4 * 2) = sqrt(2.5)
         """
         expected = np.sqrt(2.5)
-        result = sample_std(simple_array_for_std, ddof=1)
+        result = sstd(simple_array_for_std, ddof=1, nan=True)
         assert_allclose(result, expected, rtol=1e-10)
 
-    def test_sample_std_with_nan(self, array_with_nan):
+    def test_sstd_with_nan(self, array_with_nan):
         """
-        Test sample_std ignores NaN values.
+        Test sstd ignores NaN values when nan=True.
 
         Array: [1, 2, NaN, 4, 5] -> effective [1, 2, 4, 5], n=4
         Mean = 12/4 = 3
@@ -67,13 +58,13 @@ class TestSampleStd:
                  = (4 + 1 + 1 + 4) / 4 = 10/4 = 2.5
         """
         expected = np.sqrt(2.5)
-        result = sample_std(array_with_nan, ddof=0)
+        result = sstd(array_with_nan, ddof=0, nan=True)
         assert_allclose(result, expected, rtol=1e-10)
 
-    def test_sample_std_empty_array(self):
-        """Test sample_std returns empty array for empty input with large ddof."""
+    def test_sstd_empty_array(self):
+        """Test sstd returns empty array when valid sample count <= ddof."""
         arr = np.array([1.0])  # size=1
-        result = sample_std(arr, ddof=1)  # division by zero case
+        result = sstd(arr, ddof=1, nan=True)  # division by zero case
         # The function returns empty array when ZeroDivisionError
         assert result.size == 0 or np.isinf(result) or np.isnan(result)
 
@@ -160,80 +151,85 @@ class TestSqsum:
         assert sqsum(1, 2, 3) == 14
 
 
-class TestErrProp:
-    """Tests for err_prop function (error propagation)."""
+class TestQuadratureSum:
+    """Tests for quad_sum function (error propagation)."""
 
-    def test_err_prop_3_4(self):
+    def test_quad_sum_3_4(self):
         """
         sqrt(3^2 + 4^2) = sqrt(25) = 5
 
         This is the 3-4-5 Pythagorean triple.
         """
         expected = 5.0
-        result = err_prop(3, 4)
+        result = quad_sum(3, 4)
         assert_allclose(result, expected, rtol=1e-10)
 
-    def test_err_prop_single(self):
+    def test_quad_sum_single(self):
         """sqrt(5^2) = 5"""
-        assert_allclose(err_prop(5), 5.0, rtol=1e-10)
+        assert_allclose(quad_sum(5), 5.0, rtol=1e-10)
 
-    def test_err_prop_multiple(self):
+    def test_quad_sum_multiple(self):
         """sqrt(1 + 4 + 9) = sqrt(14) = 3.7416..."""
         expected = np.sqrt(14)
-        result = err_prop(1, 2, 3)
+        result = quad_sum(1, 2, 3)
         assert_allclose(result, expected, rtol=1e-10)
 
 
-class TestConvertPct:
-    """Tests for convert_pct function (natural <-> percent)."""
+class TestPercentScale:
+    """Tests for percent_scale function (fraction <-> percent)."""
 
     def test_natural_to_percent(self):
         """0.5 -> 50%"""
-        result = convert_pct(0.5, already=False, convert2unit=True)
+        result = percent_scale(0.5, input_percent=False, output_percent=True)
         assert_allclose(result, [50.0], rtol=1e-10)
 
     def test_percent_to_natural(self):
         """50% -> 0.5"""
-        result = convert_pct(50.0, already=True, convert2unit=False)
+        result = percent_scale(50.0, input_percent=True, output_percent=False)
         assert_allclose(result, [0.5], rtol=1e-10)
 
     def test_no_conversion(self):
         """Both True or both False: no change"""
-        result = convert_pct(0.5, already=False, convert2unit=False)
+        result = percent_scale(0.5, input_percent=False, output_percent=False)
         assert_allclose(result, [0.5], rtol=1e-10)
 
-        result = convert_pct(50.0, already=True, convert2unit=True)
+        result = percent_scale(50.0, input_percent=True, output_percent=True)
         assert_allclose(result, [50.0], rtol=1e-10)
 
     def test_multiple_values(self):
         """Multiple values converted at once."""
-        result = convert_pct(0.1, 0.2, 0.3, already=False, convert2unit=True)
+        result = percent_scale(0.1, 0.2, 0.3, input_percent=False, output_percent=True)
         expected = [10.0, 20.0, 30.0]
         assert_allclose(result, expected, rtol=1e-10)
 
 
-class TestConvertDeg:
-    """Tests for convert_deg function (radians <-> degrees)."""
+class TestDegreeScale:
+    """Tests for degree_scale function (radians <-> degrees)."""
 
     def test_rad_to_deg(self):
         """pi/2 rad -> 90 deg"""
-        result = convert_deg(np.pi / 2, already=False, convert2unit=True)
+        result = degree_scale(np.pi / 2, input_degree=False, output_degree=True)
         assert_allclose(result, [90.0], rtol=1e-10)
 
     def test_deg_to_rad(self):
         """90 deg -> pi/2 rad"""
-        result = convert_deg(90.0, already=True, convert2unit=False)
+        result = degree_scale(90.0, input_degree=True, output_degree=False)
         assert_allclose(result, [np.pi / 2], rtol=1e-10)
 
     def test_no_conversion(self):
         """Both True or both False: no change"""
-        result = convert_deg(np.pi, already=False, convert2unit=False)
+        result = degree_scale(np.pi, input_degree=False, output_degree=False)
         assert_allclose(result, [np.pi], rtol=1e-10)
 
     def test_multiple_angles(self):
         """0, pi/4, pi/2, pi -> 0, 45, 90, 180 degrees"""
-        result = convert_deg(
-            0, np.pi / 4, np.pi / 2, np.pi, already=False, convert2unit=True
+        result = degree_scale(
+            0,
+            np.pi / 4,
+            np.pi / 2,
+            np.pi,
+            input_degree=False,
+            output_degree=True,
         )
         expected = [0.0, 45.0, 90.0, 180.0]
         assert_allclose(result, expected, rtol=1e-10)

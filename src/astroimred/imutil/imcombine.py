@@ -8,7 +8,7 @@ from astro_ndslice import is_list_like, listify, offseted_shape
 from astropy.nddata import CCDData
 from astropy.time import Time
 
-from astroimred._core.time import str_now
+from astroimred._core.astropy_helpers import str_now
 from astroimred._core.types import HDUExt, SectionLike, StrPathLike
 from astroimred.fitsmgmt.header import cmt2hdr
 from astroimred.fitsmgmt.io import _parse_extension, inputs2list, load_ccd

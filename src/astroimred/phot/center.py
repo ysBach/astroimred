@@ -10,10 +10,16 @@ from photutils.centroids import centroid_com
 from scipy import ndimage
 from scipy.optimize import curve_fit
 
+from astroimred._core.astropy_helpers import Gaussian2D_correct
+from astroimred.external.sep import (
+    _sanitize_byteorder,
+    _sep_extract,
+    sep_default_kernel,
+    sep_extract,
+)
+
 from ..logging import logger
 from .background import sky_fit
-from .seputil import _sanitize_byteorder, _sep_extract, sep_default_kernel, sep_extract
-from .util import Gaussian2D_correct
 
 __all__ = [
     "circular_slice",

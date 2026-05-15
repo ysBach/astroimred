@@ -13,6 +13,5 @@ from .pillbox import *
 from .polarimetry import *
 from .radprof import *
 from .seputil import *
-from .util import *
 
 _sys.modules[f"{__name__}.logging"] = logging

@@ -9,8 +9,8 @@ from astropy.stats import sigma_clipped_stats
 from astropy.time import Time
 from astroscrappy import detect_cosmics
 
+from astroimred._core.astropy_helpers import as_quantity
 from astroimred._core.types import FQArr, StrPathLike
-from astroimred._core.units import as_quantity
 from astroimred.fitsmgmt.header import cmt2hdr, update_process, update_tlm
 from astroimred.fitsmgmt.io import _parse_image
 from astroimred.imutil.ccdops import propagate_ccdmask
