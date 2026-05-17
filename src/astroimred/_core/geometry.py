@@ -4,8 +4,6 @@ Objects that are
 (2) completely INDEPENDENT of all other modules of this package.
 """
 
-from collections.abc import Sequence
-
 import numpy as np
 from astro_ndslice import listify as listify  # noqa: F401
 
@@ -20,7 +18,6 @@ except Exception:
 __all__ = [
     "sigclip_dataerr",
     "circular_mask",
-    "circular_mask_2d",
     "enclosing_circle_radius",
     "mask_enclosing_circle_radius",
     "bezel_mask",
@@ -110,7 +107,7 @@ def circular_mask(
     https://stackoverflow.com/questions/44865023/how-can-i-create-a-circular-mask-for-a-numpy-array
 
     Note that this is slow due to the "general" N-D nature of the mask.
-    If you need a 2-D mask, use `circular_mask_2d`
+    If you need an aperture-style 2-D mask, use ``astroapers.CircAp``.
     """
     if center is None:  # use the middle of the image
         center = [npix / 2 for npix in shape[::-1]]
@@ -132,137 +129,6 @@ def circular_mask(
 
     mask = dist_from_center <= radius
     return mask
-
-
-def circular_mask_2d(
-    shape: tuple[int, int],
-    center: Sequence[float] | np.ndarray | None = None,
-    radius: float = 0.5,
-    method: str = "center",
-    subpixels: int = 5,
-    maskmin: float = 0,
-    return_apertures: bool = False,
-) -> np.ndarray | tuple[object, list[object]]:
-    """Creates a 2-D circular mask using photutils CircularAperture.
-
-    Parameters
-    ----------
-    shape : `tuple`
-        The shape of the 2-D image in *pythonic* order, i.e., `arr.shape`
-        (height, width).
-
-    center : array-like, `None`, optional.
-        The pixel coordinates of the aperture center(s) in one of the
-        following formats:
-
-        * single ``(x, y)`` pair as a `tuple`, `list`, or `~numpy.ndarray`
-        * `tuple`, `list`, or `~numpy.ndarray` of ``(x, y)`` pairs
-
-        If `None`, the center is set to the middle of the image, i.e.,
-        ``(shape[0] / 2, shape[1] / 2)``.
-        Default is `None`.
-
-    radius : `float`, array-like optional.
-        The radius (radii) of the circular mask(s).
-        Default: ``0.5``.
-
-    method : ``{'exact', 'center', 'subpixel'}``, optional
-        The method used to determine the overlap of the aperture on the pixel
-        grid. Not all options are available for all aperture types. Note that
-        the more precise methods are generally slower. The following methods
-        are available:
-
-        * ``'exact'`` (default):
-        The exact fractional overlap of the aperture and each pixel is
-        calculated. The aperture weights will contain values between 0 and 1.
-
-        * ``'center'``:
-        A pixel is considered to be entirely in or out of the aperture
-        depending on whether its center is in or out of the aperture. The
-        aperture weights will contain values only of 0 (out) and 1 (in).
-
-        * ``'subpixel'``:
-        A pixel is divided into subpixels (see the ``subpixels`` keyword), each
-        of which are considered to be entirely in or out of the aperture
-        depending on whether its center is in or out of the aperture. If
-        ``subpixels=1``, this method is equivalent to ``'center'``. The
-        aperture weights will contain values between 0 and 1.
-        Default: ``'center'``.
-
-    subpixels : `int`, optional
-        For the ``'subpixel'`` method, resample pixels by this factor in each
-        dimension. That is, each pixel is divided into ``subpixels**2``
-        subpixels. This keyword is ignored unless ``method='subpixel'``.
-        Default: ``5``.
-
-    maskmin : `float`, optional
-        The minimum value for the mask. If the aperture weights are greater
-        than this value, the pixel is considered to be in the aperture. This
-        keyword is ignored unless ``method='exact'`` or ``method='subpixel'``.
-        Default: ``0``.
-
-    return_apertures : `bool`, optional
-        If `True`, return the `CircularAperture` objects and the masks
-        instead of the 2D mask. This is useful if you want to use the
-        aperture objects directly for further computation.
-        Default: `False`.
-    """
-    try:
-        from photutils.aperture import CircularAperture
-    except ImportError:
-        if method != "center" or return_apertures:
-            raise
-        if center is None:
-            center = (shape[0] / 2, shape[1] / 2)
-        yy, xx = np.indices(shape)
-        apmask2d = np.zeros(shape, dtype=bool)
-        centers = np.atleast_2d(center)
-        radii = np.atleast_1d(radius)
-        if radii.size == 1:
-            radii = np.repeat(radii, len(centers))
-        for c, r in zip(centers, radii, strict=False):
-            apmask2d |= (xx - c[0]) ** 2 + (yy - c[1]) ** 2 < r**2
-        return apmask2d
-
-    if center is None:  # use the middle of the image
-        center = (shape[0] / 2, shape[1] / 2)
-
-    try:
-        apertures = CircularAperture(center, radius)
-        apmasks = apertures.to_mask(method=method, subpixels=subpixels)
-        if not isinstance(apmasks, list):
-            apmasks = [apmasks]
-    except ValueError as err:
-        # multiple radii and "ValueError: 'r' must be a positive scalar" happens.
-        if center.shape[0] != np.size(radius):
-            raise ValueError(
-                "If `radius` is an array-like, it must have the same length as `center`; "
-                f"({center.shape[0] = }) != ({np.size(radius)} = )."
-            ) from err
-        apertures = [
-            CircularAperture(c, r=r) for c, r in zip(center, radius, strict=False)
-        ]
-        apmasks = [ap.to_mask(method=method, subpixels=subpixels) for ap in apertures]
-
-    apmask2d = np.zeros(shape, dtype=bool)
-
-    if method == "center":
-        # Use the center of the pixel to determine if it is in the aperture
-        for m in apmasks:
-            apmask2d |= m.to_image(shape, dtype=bool)
-
-    elif method == "exact" or method == "subpixel":
-        # Use the exact overlap of the aperture and each pixel
-        for m in apmasks:
-            apmask2d |= m.to_image(shape, dtype=float) > maskmin
-    else:
-        raise ValueError(
-            f"Method {method} not supported. Use 'exact', 'center', or 'subpixel'."
-        )
-
-    if return_apertures:
-        return apertures, apmasks
-    return apmask2d
 
 
 def _enclosing_circle_radius_numpy(segm, center, segm_id, output):

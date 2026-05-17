@@ -4,9 +4,9 @@ Tests for astroimred.phot.radprof module.
 All expected values are analytically derived.
 """
 
+import astroapers as aap
 import numpy as np
 from numpy.testing import assert_allclose
-from photutils.aperture import CircularAnnulus
 
 from astroimred.phot.background import annul2values
 from astroimred.phot.radprof import (
@@ -351,7 +351,7 @@ class TestRadialProfileAnalytical:
         Annulus area = pi * (r_out^2 - r_in^2)
         For r_in=5, r_out=7: area = pi * (49 - 25) = 24*pi ≈ 75.4
         """
-        an = CircularAnnulus((50, 50), r_in=5, r_out=7)
+        an = aap.CircAn((50, 50), r_in=5, r_out=7)
 
         # Using annul2values to count pixels
         vals = annul2values(uniform_100x100, an)

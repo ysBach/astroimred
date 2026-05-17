@@ -2,12 +2,11 @@
 
 from itertools import repeat
 
+import astroapers as aap
 import numpy as np
 import pandas as pd
 from astropy.nddata import CCDData
-from photutils.aperture import CircularAnnulus
 
-from .aputil import fast_circ_apmask
 from .background import sky_fit
 from .center import circular_bbox_cut
 
@@ -166,9 +165,7 @@ def radial_profile(
     else:
         profs = []
     for r, _thick in zip(radii, thickness, strict=False):
-        an = CircularAnnulus(
-            center, r_in=max(0.01, r - _thick / 2), r_out=r + _thick / 2
-        )
+        an = aap.CircAn(center, r_in=max(0.01, r - _thick / 2), r_out=r + _thick / 2)
         _skyfit = sky_fit(im, an, mask=mask, to_table=False, **kwargs)[0]
         _skyfit["r"] = r
         profs.append(_skyfit)
@@ -256,23 +253,23 @@ def radcum_profile(
     x, y = center
     _mask_arr = np.asarray(mask, dtype=bool) if mask is not None else None
 
-    ap_masks = [
-        fast_circ_apmask(x, y, r, use_exact=1) for r in radii
-    ]  # (mask, sl) pairs
+    ap_masks = [aap.CircAp((x, y), r).get_apmask(method="exact") for r in radii]
 
     # aperture sums
     if _mask_arr is not None:
-        apsums = np.array([np.sum(m * im[sl] * ~_mask_arr[sl]) for m, sl in ap_masks])
+        apsums = np.array([apm.apsum(im, mask=_mask_arr)[0] for apm in ap_masks])
     else:
-        apsums = np.array([np.sum(m * im[sl]) for m, sl in ap_masks])
+        apsums = np.array([apm.apsum(im)[0] for apm in ap_masks])
 
     prof = {"r": radii, "apsum": apsums}
 
     if add_npix:
         if _mask_arr is not None:
-            npixs = [int(np.sum((m > 0) * ~_mask_arr[sl])) for m, sl in ap_masks]
+            npixs = [
+                int(apm.apsum(np.ones_like(im), mask=_mask_arr)[1]) for apm in ap_masks
+            ]
         else:
-            npixs = [int(np.sum(m > 0)) for m, sl in ap_masks]
+            npixs = [int(apm.apsum(np.ones_like(im))[1]) for apm in ap_masks]
         prof["npix"] = npixs
 
     unc_vals = None
@@ -280,10 +277,10 @@ def radcum_profile(
     if var_map is not None:
         if _mask_arr is not None:
             var_vals = np.array(
-                [np.sum(m * var_map[sl] * ~_mask_arr[sl]) for m, sl in ap_masks]
+                [apm.apsum(var_map, mask=_mask_arr)[0] for apm in ap_masks]
             )
         else:
-            var_vals = np.array([np.sum(m * var_map[sl]) for m, sl in ap_masks])
+            var_vals = np.array([apm.apsum(var_map)[0] for apm in ap_masks])
         if return_var:
             unc_vals, unc_col = var_vals, "var"
         else:
@@ -341,8 +338,8 @@ def ee_radius(im, center, fraction=0.5, r_min=0.5, r_max=None, sum_is_unity=Fals
     x, y = center
 
     def _residual(r):
-        m, sl = fast_circ_apmask(x, y, r)
-        return float(np.sum(m * im[sl])) - target
+        apm = aap.CircAp((x, y), r).get_apmask(method="exact")
+        return float(apm.apsum(im)[0]) - target
 
     from scipy.optimize import brentq
 

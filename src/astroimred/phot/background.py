@@ -1,12 +1,13 @@
 from collections.abc import Callable
 
+import astroapers as aap
 import numpy as np
 from astropy.nddata import CCDData
 from astropy.table import Table
 
 from astroimred._core.astropy_helpers import sigma_clipper
 
-from .aputil import fast_circ_anmask, fast_ellip_anmask
+from ._aper_backend import center_values
 
 __all__ = ["quick_sky_circ", "sky_fit", "annul2values", "mmm_dao"]
 
@@ -40,13 +41,10 @@ def quick_sky_circ(
     kwargs : dict, optional
         The keyword arguments for `sky_fit`.
     """
-    from photutils.aperture import CircularAnnulus
-
-    annulus = CircularAnnulus(pos, r_in=r_in, r_out=r_out)
+    annulus = aap.CircAn(pos, r_in=r_in, r_out=r_out)
     return sky_fit(ccd, annulus, mask=mask, **kwargs)
 
 
-# FIXME: use aputil to boost
 def sky_fit(
     ccd: CCDData | np.ndarray,
     annulus=None,
@@ -257,6 +255,10 @@ def annul2values(
 
     Notes
     -----
+    For astroapers aperture inputs, center-selected masks are used so sky
+    samples match photutils' annulus default selection semantics.
+
+    Old comments:
     For `~photutils.aperture.CircularAnnulus` inputs, a fast path via
     `~astroimred.phot.aputil.fast_circ_anmask` is used, bypassing photutils
     ``ApertureMask`` object construction. Benchmarked on a 512×512 image:
@@ -268,8 +270,6 @@ def annul2values(
     typical annulus), so the overall `sky_fit` speedup is modest unless
     called in tight loops without sky fitting.
     """
-    from photutils.aperture import CircularAnnulus, EllipticalAnnulus
-
     if isinstance(ccd, CCDData):
         arr = np.asarray(ccd.data)
         _ccd_mask = ccd.mask
@@ -283,107 +283,9 @@ def annul2values(
         arr = np.asarray(ccd)
         base_mask = None if mask is None else np.asarray(mask, dtype=bool)
 
-    # --- fast path for CircularAnnulus ---
-    if isinstance(annulus, CircularAnnulus):
-        try:
-            positions = annulus.positions  # shape (N, 2) or (2,) if scalar
-            if annulus.isscalar:
-                positions = positions[np.newaxis, :]  # (1, 2)
-        except AttributeError:
-            positions = np.atleast_2d(annulus.positions)
-
-        results = []
-        for pos in positions:
-            x, y = pos
-            an_mask, sl = fast_circ_anmask(x, y, annulus.r_in, annulus.r_out)
-            image_sl, mask_sl = _clip_mask_slices(sl, an_mask.shape, arr.shape)
-            if image_sl is None or mask_sl is None:  # annulus fully outside the image
-                results.append(np.array([], dtype=arr.dtype))
-                continue
-            sub = arr[image_sl]
-            an_mask = an_mask[mask_sl]
-            in_an = an_mask > 0
-            vals = sub[in_an]
-            if base_mask is not None:
-                bm_sl = base_mask[image_sl][in_an]
-                vals = vals[~bm_sl]
-            results.append(vals)
-        return results
-
-    # --- fast path for EllipticalAnnulus ---
-    elif isinstance(annulus, EllipticalAnnulus):
-        import astropy.units as u
-
-        try:
-            positions = annulus.positions
-            if annulus.isscalar:
-                positions = positions[np.newaxis, :]
-        except AttributeError:
-            positions = np.atleast_2d(annulus.positions)
-
-        theta = annulus.theta.to_value(u.rad)
-        # b_in may not exist in older photutils; derive from b_out * a_in / a_out
-        try:
-            b_in = annulus.b_in
-        except AttributeError:
-            b_in = annulus.b_out * annulus.a_in / annulus.a_out
-
-        results = []
-        for pos in positions:
-            x, y = pos
-            an_mask, sl = fast_ellip_anmask(
-                x, y, annulus.a_in, b_in, annulus.a_out, annulus.b_out, theta
-            )
-            image_sl, mask_sl = _clip_mask_slices(sl, an_mask.shape, arr.shape)
-            if image_sl is None or mask_sl is None:  # annulus fully outside the image
-                results.append(np.array([], dtype=arr.dtype))
-                continue
-            sub = arr[image_sl]
-            an_mask = an_mask[mask_sl]
-            in_an = an_mask > 0
-            vals = sub[in_an]
-            if base_mask is not None:
-                bm_sl = base_mask[image_sl][in_an]
-                vals = vals[~bm_sl]
-            results.append(vals)
-        return results
-
-    # --- fallback for other aperture types ---
-    an_masks = annulus.to_mask(method="center")
-    try:
-        if annulus.isscalar:
-            an_masks = [an_masks]
-    except AttributeError:
-        pass
-
-    return [am.get_values(arr, base_mask) for am in an_masks]
-
-
-def _clip_mask_slices(
-    image_slices: tuple[slice, slice],
-    mask_shape: tuple[int, int],
-    image_shape: tuple[int, int],
-) -> tuple[tuple[slice, slice] | None, tuple[slice, slice] | None]:
-    """Return aligned image/mask slices for a possibly off-frame bbox."""
-    yslice, xslice = image_slices
-    iymin = 0 if yslice.start is None else yslice.start
-    iymax = mask_shape[0] if yslice.stop is None else yslice.stop
-    ixmin = 0 if xslice.start is None else xslice.start
-    ixmax = mask_shape[1] if xslice.stop is None else xslice.stop
-
-    y0 = max(iymin, 0)
-    y1 = min(iymax, image_shape[0])
-    x0 = max(ixmin, 0)
-    x1 = min(ixmax, image_shape[1])
-    if y0 >= y1 or x0 >= x1:
-        return None, None
-
-    clipped_image = (slice(y0, y1), slice(x0, x1))
-    clipped_mask = (
-        slice(y0 - iymin, y1 - iymin),
-        slice(x0 - ixmin, x1 - ixmin),
-    )
-    return clipped_image, clipped_mask
+    if not hasattr(annulus, "get_apmask"):
+        raise TypeError("annulus must be an astroapers aperture or annulus object.")
+    return center_values(arr, annulus, mask=base_mask)
 
 
 def mmm_dao(

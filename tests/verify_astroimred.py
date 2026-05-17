@@ -11,7 +11,7 @@ from astropy.io import fits
 try:
     from astroimred import ccdops, geometry, header, io, numeric, system, table
     from astroimred import logging as airlogging
-    from astroimred._core import time, units
+    from astroimred._core import astropy_helpers
 except ImportError:
     # Use direct path if package not installed in env yet
     import sys
@@ -20,7 +20,7 @@ except ImportError:
 
     from astroimred import ccdops, geometry, header, io, numeric, system, table
     from astroimred import logging as airlogging
-    from astroimred._core import time, units
+    from astroimred._core import astropy_helpers
 
 logger = airlogging.logger
 
@@ -52,12 +52,12 @@ def run_tests():
         assert geometry.listify("abc") == ["abc"]
 
         # str_now
-        assert len(time.str_now()) > 0
+        assert len(astropy_helpers.str_now()) > 0
 
         # as_quantity
-        q1 = units.as_quantity(10, "km")
+        q1 = astropy_helpers.as_quantity(10, "km")
         assert q1.value == 10.0 and q1.unit == u.km
-        q2 = units.as_quantity(10 * u.m, "km")
+        q2 = astropy_helpers.as_quantity(10 * u.m, "km")
         assert q2.value == 0.01 and q2.unit == u.km
 
         # binning

@@ -4,16 +4,34 @@ Tests for astroimred.phot.background module.
 All expected values are analytically derived.
 """
 
+import astroapers as aap
 import numpy as np
 import pytest
 from astropy.nddata import CCDData
 from numpy.testing import assert_allclose
-from photutils.aperture import CircularAnnulus, EllipticalAnnulus
 
 from astroimred._core.astropy_helpers import sigma_clipper
 from astroimred.phot.background import annul2values, mmm_dao, quick_sky_circ, sky_fit
 
 from . import STAR_1_2
+
+
+def _ellip_an(positions, a_in, a_out, b_out, theta=0, **kwargs):
+    import astropy.units as u
+
+    if hasattr(theta, "to_value"):
+        theta = theta.to_value(u.rad)
+    b_in = kwargs.pop("b_in", b_out * a_in / a_out)
+    if kwargs:
+        raise TypeError(f"unexpected keyword(s): {sorted(kwargs)}")
+    return aap.EllipAn(
+        positions,
+        a_in=a_in,
+        b_in=b_in,
+        a_out=a_out,
+        b_out=b_out,
+        theta_in=theta,
+    )
 
 
 # =============================================================================
@@ -32,9 +50,9 @@ class TestAnnul2Values:
             ((35, 11), 0, 75, 1),
         ],
     )
-    def test_annul2values_CircularAnnulus(self, positions, num1, num2, num500):
+    def test_annul2values_circular_annulus(self, positions, num1, num2, num500):
         """Test annul2values with CircularAnnulus at various positions."""
-        an = CircularAnnulus(positions=positions, r_in=5, r_out=7)
+        an = aap.CircAn(positions=positions, r_in=5, r_out=7)
         vals = annul2values(STAR_1_2, an, mask=None)
         assert len(vals[0]) == 76
         assert np.count_nonzero(vals[0] == 1) == num1
@@ -47,7 +65,7 @@ class TestAnnul2Values:
 
         All extracted values should equal the uniform value (10.0).
         """
-        an = CircularAnnulus(positions=(50, 50), r_in=10, r_out=15)
+        an = aap.CircAn(positions=(50, 50), r_in=10, r_out=15)
         vals = annul2values(uniform_100x100, an, mask=None)
 
         assert_allclose(vals[0], 10.0, rtol=1e-10)
@@ -64,7 +82,7 @@ class TestAnnul2Values:
         mask[50, 61] = True
         mask[50, 62] = True
 
-        an = CircularAnnulus(positions=(50, 50), r_in=10, r_out=15)
+        an = aap.CircAn(positions=(50, 50), r_in=10, r_out=15)
         vals_nomask = annul2values(uniform_100x100, an, mask=None)
         vals_masked = annul2values(uniform_100x100, an, mask=mask)
 
@@ -73,7 +91,7 @@ class TestAnnul2Values:
 
     def test_annul2values_elliptical(self, uniform_100x100):
         """Test annul2values with EllipticalAnnulus."""
-        an = EllipticalAnnulus(positions=(50, 50), a_in=8, a_out=12, b_out=6, theta=0)
+        an = _ellip_an(positions=(50, 50), a_in=8, a_out=12, b_out=6, theta=0)
         vals = annul2values(uniform_100x100, an, mask=None)
 
         # All values should be 10.0
@@ -82,7 +100,7 @@ class TestAnnul2Values:
     def test_annul2values_ccddata_input(self, uniform_100x100):
         """Test annul2values accepts CCDData input."""
         ccd = CCDData(uniform_100x100, unit="adu")
-        an = CircularAnnulus(positions=(50, 50), r_in=10, r_out=15)
+        an = aap.CircAn(positions=(50, 50), r_in=10, r_out=15)
         vals_ccd = annul2values(ccd, an, mask=None)
         vals_arr = annul2values(uniform_100x100, an, mask=None)
 
@@ -98,7 +116,7 @@ class TestAnnul2Values:
         internal_mask[50, 60] = True
         ccd = CCDData(uniform_100x100, unit="adu", mask=internal_mask)
 
-        an = CircularAnnulus(positions=(50, 50), r_in=10, r_out=15)
+        an = aap.CircAn(positions=(50, 50), r_in=10, r_out=15)
         vals_masked = annul2values(ccd, an, mask=None)
         vals_nomask = annul2values(uniform_100x100, an, mask=None)
 
@@ -117,7 +135,7 @@ class TestAnnul2Values:
         ext_mask = np.zeros_like(uniform_100x100, dtype=bool)
         ext_mask[50, 61] = True
 
-        an = CircularAnnulus(positions=(50, 50), r_in=10, r_out=15)
+        an = aap.CircAn(positions=(50, 50), r_in=10, r_out=15)
         vals_both = annul2values(ccd, an, mask=ext_mask)
         vals_internal_only = annul2values(ccd, an, mask=None)
         vals_nomask = annul2values(uniform_100x100, an, mask=None)
@@ -133,7 +151,7 @@ class TestAnnul2Values:
         Returns one array per position; all values should be 10.0.
         """
         positions = [(30, 30), (50, 50), (70, 70)]
-        an = CircularAnnulus(positions=positions, r_in=5, r_out=8)
+        an = aap.CircAn(positions=positions, r_in=5, r_out=8)
         vals = annul2values(uniform_100x100, an, mask=None)
 
         assert len(vals) == 3
@@ -145,28 +163,28 @@ class TestAnnul2Values:
         mask = np.zeros_like(uniform_100x100, dtype=bool)
         mask[50, 55] = True
 
-        an = EllipticalAnnulus(positions=(50, 50), a_in=4, a_out=8, b_out=5, theta=0)
+        an = _ellip_an(positions=(50, 50), a_in=4, a_out=8, b_out=5, theta=0)
         vals_masked = annul2values(uniform_100x100, an, mask=mask)
         vals_nomask = annul2values(uniform_100x100, an, mask=None)
 
         assert len(vals_masked[0]) <= len(vals_nomask[0])
 
     def test_annul2values_edge_circular_matches_photutils_mask(self):
-        """Fast circular path clips off-frame masks consistently."""
+        """Circular annuli clip off-frame masks consistently."""
+        phot_aperture = pytest.importorskip("photutils.aperture")
         data = np.arange(180, dtype=float).reshape(3, 60)
-        an = CircularAnnulus(positions=(1.2, 1.3), r_in=10, r_out=20)
+        an = aap.CircAn(positions=(1.2, 1.3), r_in=10, r_out=20)
+        phot_an = phot_aperture.CircularAnnulus(positions=(1.2, 1.3), r_in=10, r_out=20)
 
         vals = annul2values(data, an, mask=None)
-        expected = an.to_mask(method="center").get_values(data)
+        expected = phot_an.to_mask(method="center").get_values(data)
 
         assert_allclose(np.sort(vals[0]), np.sort(expected))
 
     def test_annul2values_edge_elliptical_clips_without_shape_mismatch(self):
-        """Fast elliptical path clips off-frame masks before indexing."""
+        """Elliptical annuli clip off-frame masks before indexing."""
         data = np.arange(300, dtype=float).reshape(6, 50)
-        an = EllipticalAnnulus(
-            positions=(2.5, 1.5), a_in=8, a_out=16, b_out=9, theta=0.3
-        )
+        an = _ellip_an(positions=(2.5, 1.5), a_in=8, a_out=16, b_out=9, theta=0.3)
 
         vals = annul2values(data, an, mask=None)
 
@@ -186,7 +204,7 @@ class TestSkyFit:
 
         Expected: msky = 10.0, ssky = 0.0
         """
-        an = CircularAnnulus(positions=(50, 50), r_in=10, r_out=20)
+        an = aap.CircAn(positions=(50, 50), r_in=10, r_out=20)
         result = sky_fit(uniform_100x100, an, method="mean")
 
         assert_allclose(result["msky"][0], 10.0, rtol=1e-10)
@@ -198,7 +216,7 @@ class TestSkyFit:
 
         Expected: msky = 10.0, ssky = 0.0
         """
-        an = CircularAnnulus(positions=(50, 50), r_in=10, r_out=20)
+        an = aap.CircAn(positions=(50, 50), r_in=10, r_out=20)
         result = sky_fit(uniform_100x100, an, method="median")
 
         assert_allclose(result["msky"][0], 10.0, rtol=1e-10)
@@ -211,7 +229,7 @@ class TestSkyFit:
         For uniform array: mean = median = 10.0
         Since (mean - median)/std is undefined (std=0), should return median.
         """
-        an = CircularAnnulus(positions=(50, 50), r_in=10, r_out=20)
+        an = aap.CircAn(positions=(50, 50), r_in=10, r_out=20)
         result = sky_fit(uniform_100x100, an, method="sex")
 
         assert_allclose(result["msky"][0], 10.0, rtol=1e-10)
@@ -223,7 +241,7 @@ class TestSkyFit:
         Data: N(100, 10), method='mean'
         Expected: msky ≈ 100 (within several std/sqrt(n))
         """
-        an = CircularAnnulus(positions=(50, 50), r_in=10, r_out=30)
+        an = aap.CircAn(positions=(50, 50), r_in=10, r_out=30)
         result = sky_fit(uniform_with_noise, an, method="mean")
 
         # Should be close to 100, allow 3-sigma tolerance
@@ -232,7 +250,7 @@ class TestSkyFit:
 
     def test_sky_fit_nsky_nrej(self, uniform_100x100):
         """Test nsky and nrej are correctly reported."""
-        an = CircularAnnulus(positions=(50, 50), r_in=10, r_out=15)
+        an = aap.CircAn(positions=(50, 50), r_in=10, r_out=15)
         result = sky_fit(uniform_100x100, an, method="mean")
 
         # nsky should be positive
@@ -298,7 +316,7 @@ class TestSkyFit:
 
         IRAF: if mean < median, use mean; else use 3*median - 2*mean
         """
-        an = CircularAnnulus(positions=(50, 50), r_in=10, r_out=30)
+        an = aap.CircAn(positions=(50, 50), r_in=10, r_out=30)
         result = sky_fit(uniform_with_noise, an, method="iraf")
 
         # Should be close to 100
@@ -310,7 +328,7 @@ class TestSkyFit:
 
         MMM: 3*median - 2*mean
         """
-        an = CircularAnnulus(positions=(50, 50), r_in=10, r_out=30)
+        an = aap.CircAn(positions=(50, 50), r_in=10, r_out=30)
         result = sky_fit(uniform_with_noise, an, method="mmm")
 
         # Should be close to 100
@@ -326,14 +344,14 @@ class TestSkyFit:
         def custom_method(skyarr, ssky):
             return np.max(skyarr)
 
-        an = CircularAnnulus(positions=(50, 50), r_in=10, r_out=20)
+        an = aap.CircAn(positions=(50, 50), r_in=10, r_out=20)
         result = sky_fit(uniform_100x100, an, method=custom_method)
 
         assert_allclose(result["msky"][0], 10.0, rtol=1e-10)
 
     def test_sky_fit_return_dict(self, uniform_100x100):
         """Test sky_fit returns dict when to_table=False."""
-        an = CircularAnnulus(positions=(50, 50), r_in=10, r_out=20)
+        an = aap.CircAn(positions=(50, 50), r_in=10, r_out=20)
         result = sky_fit(uniform_100x100, an, method="mean", to_table=False)
 
         assert isinstance(result, list)
@@ -342,7 +360,7 @@ class TestSkyFit:
 
     def test_sky_fit_return_skyarr(self, uniform_100x100):
         """Test sky_fit returns sky array when return_skyarr=True."""
-        an = CircularAnnulus(positions=(50, 50), r_in=10, r_out=20)
+        an = aap.CircAn(positions=(50, 50), r_in=10, r_out=20)
         result, skys = sky_fit(uniform_100x100, an, method="mean", return_skyarr=True)
 
         assert isinstance(skys, list)
@@ -351,7 +369,7 @@ class TestSkyFit:
 
     def test_sky_fit_return_dict_and_skyarr(self, uniform_100x100):
         """Test sky_fit with to_table=False and return_skyarr=True."""
-        an = CircularAnnulus(positions=(50, 50), r_in=10, r_out=20)
+        an = aap.CircAn(positions=(50, 50), r_in=10, r_out=20)
         result, skys = sky_fit(
             uniform_100x100, an, method="mean", to_table=False, return_skyarr=True
         )
@@ -367,7 +385,7 @@ class TestSkyFit:
 
         All pixels should be used; nrej should be 0.
         """
-        an = CircularAnnulus(positions=(50, 50), r_in=10, r_out=20)
+        an = aap.CircAn(positions=(50, 50), r_in=10, r_out=20)
         result = sky_fit(uniform_100x100, an, method="mean", sky_clipper=None)
 
         assert_allclose(result["msky"][0], 10.0, rtol=1e-10)
@@ -380,7 +398,7 @@ class TestSkyFit:
         ddof=0 gives population std, ddof=1 gives sample std.
         They should differ for finite samples.
         """
-        an = CircularAnnulus(positions=(50, 50), r_in=10, r_out=30)
+        an = aap.CircAn(positions=(50, 50), r_in=10, r_out=30)
         result_ddof0 = sky_fit(uniform_with_noise, an, method="mean", std_ddof=0)
         result_ddof1 = sky_fit(uniform_with_noise, an, method="mean", std_ddof=1)
 
@@ -418,13 +436,13 @@ class TestSkyFit:
 
     def test_sky_fit_invalid_method(self, uniform_100x100):
         """Test sky_fit raises ValueError for unknown method string."""
-        an = CircularAnnulus(positions=(50, 50), r_in=10, r_out=20)
+        an = aap.CircAn(positions=(50, 50), r_in=10, r_out=20)
         with pytest.raises(ValueError):
             sky_fit(uniform_100x100, an, method="unknown_method")
 
     def test_sky_fit_method_case_insensitive(self, uniform_100x100):
         """Test sky_fit method strings are case-insensitive."""
-        an = CircularAnnulus(positions=(50, 50), r_in=10, r_out=20)
+        an = aap.CircAn(positions=(50, 50), r_in=10, r_out=20)
         result_lower = sky_fit(uniform_100x100, an, method="iraf")
         result_upper = sky_fit(uniform_100x100, an, method="IRAF")
 
@@ -433,7 +451,7 @@ class TestSkyFit:
     def test_sky_fit_ccddata_input(self, uniform_100x100):
         """Test sky_fit accepts CCDData input."""
         ccd = CCDData(uniform_100x100, unit="adu")
-        an = CircularAnnulus(positions=(50, 50), r_in=10, r_out=20)
+        an = aap.CircAn(positions=(50, 50), r_in=10, r_out=20)
         result = sky_fit(ccd, an, method="mean")
 
         assert_allclose(result["msky"][0], 10.0, rtol=1e-10)
@@ -450,7 +468,7 @@ class TestSkyFit:
         Test sky_fit with multi-position annulus returns one row per position.
         """
         positions = [(30, 30), (50, 50), (70, 70)]
-        an = CircularAnnulus(positions=positions, r_in=5, r_out=10)
+        an = aap.CircAn(positions=positions, r_in=5, r_out=10)
         result = sky_fit(uniform_100x100, an, method="mean")
 
         assert len(result) == 3
@@ -686,7 +704,7 @@ class TestAnnul2ValuesElliptical:
         """All extracted values equal the uniform fill value for any theta."""
         import astropy.units as u
 
-        an = EllipticalAnnulus(
+        an = _ellip_an(
             positions=(50, 50), a_in=6, a_out=10, b_out=7, theta=theta * u.rad
         )
         vals = annul2values(uniform_100x100, an, mask=None)
@@ -697,9 +715,7 @@ class TestAnnul2ValuesElliptical:
         All values should equal the uniform fill value."""
         import astropy.units as u
 
-        an = EllipticalAnnulus(
-            positions=(50, 50), a_in=6, a_out=10, b_out=7, theta=0.0 * u.rad
-        )
+        an = _ellip_an(positions=(50, 50), a_in=6, a_out=10, b_out=7, theta=0.0 * u.rad)
         vals_fast = annul2values(uniform_100x100, an, mask=None)
         # All extracted values must equal the uniform fill value
         assert_allclose(vals_fast[0], 10.0, rtol=1e-10)
@@ -714,9 +730,7 @@ class TestAnnul2ValuesElliptical:
         mask[50, 55] = True
         mask[50, 56] = True
 
-        an = EllipticalAnnulus(
-            positions=(50, 50), a_in=4, a_out=8, b_out=5, theta=0.0 * u.rad
-        )
+        an = _ellip_an(positions=(50, 50), a_in=4, a_out=8, b_out=5, theta=0.0 * u.rad)
         vals_nomask = annul2values(uniform_100x100, an, mask=None)
         vals_masked = annul2values(uniform_100x100, an, mask=mask)
 
@@ -727,9 +741,7 @@ class TestAnnul2ValuesElliptical:
         import astropy.units as u
 
         ccd = CCDData(uniform_100x100, unit="adu")
-        an = EllipticalAnnulus(
-            positions=(50, 50), a_in=5, a_out=9, b_out=6, theta=0.0 * u.rad
-        )
+        an = _ellip_an(positions=(50, 50), a_in=5, a_out=9, b_out=6, theta=0.0 * u.rad)
         vals_ccd = annul2values(ccd, an, mask=None)
         vals_arr = annul2values(uniform_100x100, an, mask=None)
         assert_allclose(vals_ccd[0], vals_arr[0], rtol=1e-10)
@@ -739,9 +751,7 @@ class TestAnnul2ValuesElliptical:
         import astropy.units as u
 
         positions = [(30, 30), (50, 50), (70, 70)]
-        an = EllipticalAnnulus(
-            positions=positions, a_in=4, a_out=8, b_out=5, theta=0.0 * u.rad
-        )
+        an = _ellip_an(positions=positions, a_in=4, a_out=8, b_out=5, theta=0.0 * u.rad)
         vals = annul2values(uniform_100x100, an, mask=None)
         assert len(vals) == 3
         for v in vals:
@@ -755,9 +765,7 @@ class TestAnnul2ValuesElliptical:
         internal_mask[50, 57] = True
         ccd = CCDData(uniform_100x100, unit="adu", mask=internal_mask)
 
-        an = EllipticalAnnulus(
-            positions=(50, 50), a_in=5, a_out=9, b_out=6, theta=0.0 * u.rad
-        )
+        an = _ellip_an(positions=(50, 50), a_in=5, a_out=9, b_out=6, theta=0.0 * u.rad)
         vals_masked = annul2values(ccd, an, mask=None)
         vals_nomask = annul2values(uniform_100x100, an, mask=None)
         assert len(vals_masked[0]) <= len(vals_nomask[0])
@@ -766,9 +774,7 @@ class TestAnnul2ValuesElliptical:
         """sky_fit works end-to-end with EllipticalAnnulus fast path."""
         import astropy.units as u
 
-        an = EllipticalAnnulus(
-            positions=(50, 50), a_in=6, a_out=12, b_out=8, theta=0.0 * u.rad
-        )
+        an = _ellip_an(positions=(50, 50), a_in=6, a_out=12, b_out=8, theta=0.0 * u.rad)
         result = sky_fit(uniform_100x100, an, method="mean")
         assert_allclose(result["msky"][0], 10.0, rtol=1e-10)
         assert_allclose(result["ssky"][0], 0.0, atol=1e-10)
