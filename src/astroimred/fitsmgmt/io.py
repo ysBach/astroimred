@@ -664,7 +664,10 @@ def _astropy_raw_return(
             )
         except AttributeError:
             unc = None
-        mask = None if extension_mask is None else np.array(ccd.mask.array)
+        try:
+            mask = None if extension_mask is None else np.array(ccd.mask.array)
+        except AttributeError:
+            mask = None
         flag = None if extension_flags is None else np.array(ccd.flags)
         return ccd.data, unc, mask, flag
     return ccd.data
