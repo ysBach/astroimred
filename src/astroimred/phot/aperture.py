@@ -1,4 +1,4 @@
-"""Aperture helpers backed by astroaap."""
+"""Aperture helpers backed by astroapers."""
 
 from __future__ import annotations
 
@@ -40,38 +40,25 @@ def cutout_from_ap(
 
 def circ_ap_an(
     positions,
-    r_ap: float | None = None,
-    r_in: float | None = None,
-    r_out: float | None = None,
-    fwhm: float | None = None,
-    f_ap: float = 1.5,
-    f_in: float = 4.0,
-    f_out: float = 6.0,
+    r_ap: float,
+    r_in: float,
+    r_out: float,
 ) -> tuple[aap.CircAp, aap.CircAn]:
     """Return circular aperture and annulus objects."""
-    r_ap = _sanitize_apsize(r_ap, fwhm=fwhm, factor=f_ap, name="r_ap")
-    r_in = _sanitize_apsize(r_in, fwhm=fwhm, factor=f_in, name="r_in")
-    r_out = _sanitize_apsize(r_out, fwhm=fwhm, factor=f_out, name="r_out")
     return aap.CircAp(positions, r=r_ap), aap.CircAn(positions, r_in=r_in, r_out=r_out)
 
 
 def ellip_ap_an(
     positions,
-    r_ap: float | tuple[float, float] | None = None,
-    r_in: float | tuple[float, float] | None = None,
-    r_out: float | tuple[float, float] | None = None,
-    fwhm: float | None = None,
+    a_ap: float,
+    b_ap: float,
+    a_in: float,
+    b_in: float,
+    a_out: float,
+    b_out: float,
     theta: float = 0.0,
-    f_ap: float | tuple[float, float] = (1.5, 1.5),
-    f_in: float | tuple[float, float] = (4.0, 4.0),
-    f_out: float | tuple[float, float] = (6.0, 6.0),
 ) -> tuple[aap.EllipAp, aap.EllipAn]:
     """Return elliptical aperture and annulus objects."""
-    a_ap, b_ap = _sanitize_apsize(r_ap, fwhm, factor=f_ap, name="r_ap", repeat=True)
-    a_in, b_in = _sanitize_apsize(r_in, fwhm, factor=f_in, name="r_in", repeat=True)
-    a_out, b_out = _sanitize_apsize(
-        r_out, fwhm, factor=f_out, name="r_out", repeat=True
-    )
     theta_rad = as_radians(theta)
     ap = aap.EllipAp(positions, a=a_ap, b=b_ap, theta=theta_rad)
     an = aap.EllipAn(
@@ -87,62 +74,29 @@ def ellip_ap_an(
 
 def pill_ap_an(
     positions,
-    fwhm,
-    trail,
-    theta=0.0,
-    f_ap=(1.5, 1.5),
-    f_in=(4.0, 4.0),
-    f_out=(6.0, 6.0),
-    f_w=1.0,
+    w_ap: float,
+    a_ap: float,
+    b_ap: float,
+    w_in: float,
+    a_in: float,
+    b_in: float,
+    w_out: float,
+    a_out: float,
+    b_out: float,
+    theta: float = 0.0,
 ) -> tuple[aap.PillAp, aap.PillAn]:
     """Return pill aperture and annulus objects."""
-    fwhm = np.repeat(fwhm, 2) if np.isscalar(fwhm) else np.asarray(fwhm)
-    f_ap = np.repeat(f_ap, 2) if np.isscalar(f_ap) else np.asarray(f_ap)
-    f_in = np.repeat(f_in, 2) if np.isscalar(f_in) else np.asarray(f_in)
-    f_out = np.repeat(f_out, 2) if np.isscalar(f_out) else np.asarray(f_out)
-
-    a_ap = float(f_ap[0] * fwhm[0])
-    b_ap = float(f_ap[1] * fwhm[1])
-    a_in = float(f_in[0] * fwhm[0])
-    b_in = float(f_in[1] * fwhm[1])
-    a_out = float(f_out[0] * fwhm[0])
-    b_out = float(f_out[1] * fwhm[1])
-    w = float(f_w * trail)
     theta_rad = as_radians(theta)
 
-    ap = aap.PillAp(positions, w=w, a=a_ap, b=b_ap, theta=theta_rad)
+    ap = aap.PillAp(positions, w=w_ap, a=a_ap, b=b_ap, theta=theta_rad)
     an = aap.PillAn(
         positions,
-        w_in=w,
+        w_in=w_in,
         a_in=a_in,
         b_in=b_in,
-        w_out=w,
+        w_out=w_out,
         a_out=a_out,
         b_out=b_out,
         theta_in=theta_rad,
-        validate=False,
     )
     return ap, an
-
-
-def _sanitize_apsize(
-    size=None,
-    fwhm=None,
-    factor=None,
-    name: str = "size",
-    repeat: bool = False,
-):
-    def _repeat(item, *, rep: int = 2):
-        return (
-            np.repeat(item, rep)
-            if repeat and np.isscalar(item)
-            else np.atleast_1d(item)
-        )
-
-    if size is None:
-        if fwhm is None:
-            raise ValueError(f"{name} is None; fwhm must be given.")
-        values = _repeat(factor) * _repeat(fwhm)
-        return values if repeat else float(values[0])
-    values = _repeat(size)
-    return values if repeat else float(values[0])
