@@ -1,3 +1,4 @@
+import importlib.util
 import logging
 import shutil
 import subprocess
@@ -28,14 +29,6 @@ def test_top_level_lightweight_exports():
     assert callable(air.fixpix)
     assert callable(air.cmt2hdr)
     assert callable(air.fits_summary)
-
-
-def test_top_level_does_not_export_heavy_tools():
-    """Heavy image task functions are NOT in the top-level namespace."""
-    assert not hasattr(air, "imcombine")
-    assert not hasattr(air, "imarith")
-    assert not hasattr(air, "imcopy")
-    assert not hasattr(air, "smooth_med")
 
 
 def test_heavy_tools_importable_directly():
@@ -82,22 +75,19 @@ def test_logger_accessible():
     assert air.logger is air.fitsmgmt.logger
 
 
-def test_imutil_numba_flag():
-    """set_use_numba updates _config and the module-level IMOPS_USE_NUMBA."""
+def test_imutil_numba_switch_removed():
+    """Numba-path toggles were removed after moving combine kernels to imc."""
     import astroimred.imutil as imutil
-    from astroimred.imutil import _config
 
-    original = _config.IMOPS_USE_NUMBA
-    try:
-        imutil.set_use_numba(False)
-        assert imutil.IMOPS_USE_NUMBA is False
-        assert _config.IMOPS_USE_NUMBA is False
+    assert not hasattr(imutil, "set_use_numba")
+    assert not hasattr(imutil, "IMOPS_USE_NUMBA")
+    assert importlib.util.find_spec("astroimred.imutil._config") is None
 
-        imutil.set_use_numba(True)
-        assert imutil.IMOPS_USE_NUMBA is True
-        assert _config.IMOPS_USE_NUMBA is True
-    finally:
-        imutil.set_use_numba(original)
+
+def test_legacy_combination_helpers_removed():
+    """Old local combine helpers are superseded by imcombiners."""
+    assert importlib.util.find_spec("astroimred.imutil._util_comb") is None
+    assert importlib.util.find_spec("astroimred.imutil._util_lmed") is None
 
 
 def test_import_is_lightweight():

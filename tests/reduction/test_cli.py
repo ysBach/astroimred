@@ -170,8 +170,8 @@ def test_group_comb_minmax_with_aux_outputs(tmp_path):
     np.testing.assert_allclose(fits.getdata(output), 10.0)
     np.testing.assert_array_equal(fits.getdata(nrej), np.full((2, 3), 2))
     assert fits.getdata(mask).shape == (4, 2, 3)
-    np.testing.assert_allclose(fits.getdata(low), 0.0)
-    np.testing.assert_allclose(fits.getdata(upp), 100.0)
+    np.testing.assert_allclose(fits.getdata(low), 10.0)
+    np.testing.assert_allclose(fits.getdata(upp), 10.0)
 
 
 def test_comb_command_numeric_offsets_and_memlimit(tmp_path):

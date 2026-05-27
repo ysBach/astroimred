@@ -6,12 +6,6 @@ from astropy.nddata import CCDData
 import astroimred.reduction as imred
 
 
-def test_bdf_process_removed():
-    """`bdf_process` is no longer part of the reduction API."""
-    assert not hasattr(imred.preproc, "bdf_process")
-    assert not hasattr(imred, "bdf_process")
-
-
 def test_unimplemented_helpers_raise():
     """Placeholder helpers should fail explicitly."""
     with pytest.raises(NotImplementedError):

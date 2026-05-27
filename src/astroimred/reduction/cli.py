@@ -441,10 +441,10 @@ def main():
     help="Output number of rejected/excluded pixels.",
 )
 @click.option(
-    "--output-err",
+    "--output-std",
     "--sigma-output",
     type=click.Path(dir_okay=False, writable=True, path_type=Path),
-    help="Output standard deviation or variance image.",
+    help="Output imcombiners standard-deviation diagnostic image.",
 )
 @click.option(
     "--output-low",
@@ -457,15 +457,9 @@ def main():
     help="Output upper rejection bound image.",
 )
 @click.option(
-    "--output-rejcode",
+    "--output-flags",
     type=click.Path(dir_okay=False, writable=True, path_type=Path),
-    help="Output integer rejection-code image.",
-)
-@click.option(
-    "--return-variance/--return-stddev",
-    default=False,
-    show_default=True,
-    help="Store variance instead of standard deviation in output-err.",
+    help="Output imcombiners integer output-flags image.",
 )
 @click.option(
     "--overwrite/--no-overwrite",
@@ -521,11 +515,10 @@ def comb_command(
     logfile,
     output_mask,
     output_nrej,
-    output_err,
+    output_std,
     output_low,
     output_upp,
-    output_rejcode,
-    return_variance,
+    output_flags,
     overwrite,
     checksum,
     verbose,
@@ -570,16 +563,15 @@ def comb_command(
             dtype=dtype,
             memlimit=memlimit,
             verbose=verbose,
-            return_variance=return_variance,
             imcmb_key=imcmb_key,
             exposure_key=exposure_key,
             output=output,
             output_mask=output_mask,
             output_nrej=output_nrej,
-            output_err=output_err,
+            output_std=output_std,
             output_low=output_low,
             output_upp=output_upp,
-            output_rejcode=output_rejcode,
+            output_flags=output_flags,
             output_verify="exception",
             overwrite=overwrite,
             checksum=checksum,

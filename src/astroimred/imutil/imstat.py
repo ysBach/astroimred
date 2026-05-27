@@ -2,7 +2,6 @@
 
 import os
 
-import bottleneck as bn
 import numpy as np
 from astro_ndslice import slicefy
 from astropy import units as u
@@ -136,7 +135,7 @@ def give_stats(
     minf = np.min
     maxf = np.max
     avgf = np.mean
-    medf = bn.median  # Still median from bn seems faster!
+    medf = np.median
     stdf = np.std
     pctf = np.percentile
 

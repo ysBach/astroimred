@@ -1,6 +1,6 @@
 from pathlib import Path
 
-import bottleneck as bn
+import imcombiners as imc
 import numpy as np
 import numpy.typing as npt
 import pandas as pd
@@ -15,22 +15,7 @@ from astroimred.fitsmgmt.io import _parse_extension, inputs2list, load_ccd
 from astroimred.fitsmgmt.table import SummaryInput, fits_summary, group_fits
 from astroimred.logging import logger
 
-from . import _config as config
 from . import _docstrings as docstrings
-from ._util_comb import (
-    _default_zsw_kw,
-    _set_cenfunc,
-    _set_combfunc,
-    _set_int_dtype,
-    _set_keeprej,
-    _set_mask,
-    _set_reject_name,
-    _set_sigma,
-    _set_thresh_mask,
-    do_zs,
-    get_zsw,
-)
-from ._util_comb_nb import combine_along_axis0_numba
 from ._util_fits import (
     apply_output_offsets,
     calculate_zsw,
@@ -44,7 +29,6 @@ from ._util_fits import (
     write_imcombine_logfile,
     write_imcombine_outputs,
 )
-from ._util_rej import ccdclip_mask, minmax_mask, sigclip_mask
 
 __all__ = ["group_combine", "group_save", "imcombine", "ndcombine"]
 
@@ -60,7 +44,7 @@ bpmasks                : ?
 rejmask                : output_mask
 nrejmasks              : output_nrej
 expmasks               : Should I implement???
-sigma                  : output_err
+sigma                  : output_std
 outtype                : dtype
 outlimits              : trimsec
 expname                : exposure_key
@@ -274,6 +258,62 @@ def group_save(
         ccd.write(fpath, overwrite=True)
 
 
+def _mask_total_from_parts(
+    input_mask: np.ndarray,
+    mask_rej: np.ndarray | None,
+    mask_thresh: np.ndarray | None,
+) -> np.ndarray:
+    """Return the total per-sample mask used for diagnostic output products."""
+    mask_total = np.asarray(input_mask, dtype=bool).copy()
+    if mask_thresh is not None:
+        mask_total |= mask_thresh
+    if mask_rej is not None:
+        mask_total |= mask_rej
+    return mask_total
+
+
+def _set_int_dtype(ncombine: int) -> type[np.integer]:
+    if ncombine < 255:
+        return np.uint8
+    if ncombine > 65535:
+        return np.uint32
+    return np.uint16
+
+
+def _set_reject_name(reject: str | None) -> str | None:
+    if reject is None:
+        return None
+
+    reject_key = reject.lower()
+    if reject_key in {"none", "no", "null"}:
+        return None
+    if reject_key in {"sig", "sc", "sigclip", "sigma", "sigma clip", "sigmaclip"}:
+        return "sigclip"
+    if reject_key in {"mm", "minmax"}:
+        return "minmax"
+    if reject_key in {"ccd", "ccdclip", "ccdc"}:
+        return "ccdclip"
+    if reject_key in {"pclip", "pc", "percentile"}:
+        return "pclip"
+    raise ValueError("reject not understood.")
+
+
+def _as_scalar_ccdclip_parameter(name: str, value: str | npt.ArrayLike | None) -> float:
+    """Return a scalar CCD clipping parameter accepted by `imcombiners`."""
+    arr = np.asarray(0.0 if value is None else value, dtype=float).reshape(-1)
+    if arr.size == 0:
+        raise ValueError(f"{name} must not be empty.")
+    if not np.all(np.isfinite(arr)):
+        raise ValueError(f"{name} must be finite.")
+    first = float(arr[0])
+    if not np.allclose(arr, first, rtol=0.0, atol=0.0):
+        raise ValueError(
+            f"imcombiners ccdclip currently accepts scalar {name}; "
+            f"got per-image values {arr.tolist()}."
+        )
+    return first
+
+
 def imcombine(
     inputs: SummaryInput,
     mask: np.ndarray | None = None,
@@ -309,32 +349,30 @@ def imcombine(
     logfile: StrPathLike | None = None,
     combine: str = "average",
     dtype: str = "float32",
-    dtype_err: str = "float32",
+    dtype_std: str = "float32",
     dtype_low: str | None = None,
     dtype_upp: str | None = None,
-    irafmode: bool = True,
     memlimit: float = 2.5e9,
     verbose: bool = False,
     full: bool = False,
-    return_variance: bool = False,
     imcmb_key: str = "$I",
     exposure_key: str = "EXPTIME",
     output: StrPathLike | None = None,
     output_mask: StrPathLike | None = None,
     output_nrej: StrPathLike | None = None,
-    output_err: StrPathLike | None = None,
+    output_std: StrPathLike | None = None,
     output_low: StrPathLike | None = None,
     output_upp: StrPathLike | None = None,
-    output_rejcode: StrPathLike | None = None,
+    output_flags: StrPathLike | None = None,
     return_dict: bool = False,
     output_verify: str = "exception",
     overwrite: bool = False,
     checksum: bool = False,
 ) -> CCDData | dict:
     # === 1. Normalize defaults that must not use mutable signature values ===
-    thresholds = [-np.inf, np.inf] if thresholds is None else list(thresholds)
-    zero_kw = _default_zsw_kw() if zero_kw is None else dict(zero_kw)
-    scale_kw = _default_zsw_kw() if scale_kw is None else dict(scale_kw)
+    thresholds = None if thresholds is None else list(thresholds)
+    zero_kw = None if zero_kw is None else dict(zero_kw)
+    scale_kw = None if scale_kw is None else dict(scale_kw)
     sigma = [3.0, 3.0] if sigma is None else sigma
     n_minmax = [1, 1] if n_minmax is None else n_minmax
 
@@ -348,10 +386,10 @@ def imcombine(
         full
         or output_mask is not None
         or output_nrej is not None
-        or output_err is not None
+        or output_std is not None
         or output_low is not None
         or output_upp is not None
-        or output_rejcode is not None
+        or output_flags is not None
     )
 
     items = inputs2list(inputs, sort=True, accept_ccdlike=True, check_coherency=True)
@@ -484,8 +522,8 @@ def imcombine(
         "weight": weights,  # it is weights, NOT weight, as it was updated above.
         "zero_to_0th": zero_to_0th,
         "scale_to_0th": scale_to_0th,
-        "scale_kw": scale_kw,
-        "zero_kw": zero_kw,
+        "scale_sigclip_kwargs": scale_kw,
+        "zero_sigclip_kwargs": zero_kw,
         "thresholds": thresholds,
         "n_minmax": n_minmax,
         "nkeep": nkeep,
@@ -498,11 +536,13 @@ def imcombine(
         "gain": gns,  # it is gns, not gain   , as it was updated above.
         "snoise": sns,  # it is sns, not snoise , as it was updated above.
         "pclip": pclip,
-        "irafmode": irafmode,
         "full": full,
-        "return_variance": return_variance,
         "verbose": verbose,
     }
+    if reject_fullname == "ccdclip":
+        ndcombine_kw["rdnoise"] = _as_scalar_ccdclip_parameter("rdnoise", rds)
+        ndcombine_kw["gain"] = _as_scalar_ccdclip_parameter("gain", gns)
+        ndcombine_kw["snoise"] = _as_scalar_ccdclip_parameter("snoise", sns)
 
     # == Combine with rejection! ===================================================== #
     _t = Time.now()
@@ -511,21 +551,21 @@ def imcombine(
         comb = ndcombine(
             arr=arr_full,
             mask=mask_full,
-            copy=False,  # No need to retain arr_full.
             **ndcombine_kw,
         )
 
         if full:  # unpack the output
-            comb, err, mask_rej, mask_thresh, low, upp, nit, rejcode = comb
-            mask_total = mask_full | mask_thresh | mask_rej
+            comb, mask_rej, mask_thresh, std, low, upp, nit, output_flags_data = comb
+            mask_total = _mask_total_from_parts(mask_full, mask_rej, mask_thresh)
         else:
-            err = low = upp = mask_total = rejcode = None
+            std = low = upp = mask_total = output_flags_data = None
     else:
         if verbose:
             logger.info("- Combining by %d chunks", num_chunk)
 
         comb = np.empty(sh_comb, dtype=dtype)
-        err = mask_total = mask_rej = mask_thresh = low = upp = nit = rejcode = None
+        std = mask_total = mask_rej = mask_thresh = low = upp = nit = None
+        output_flags_data = None
 
         for i_chunk, chunk_slices in enumerate(chunks, start=1):
             if verbose:
@@ -548,57 +588,68 @@ def imcombine(
             combined_chunk = ndcombine(
                 arr=arr_chunk,
                 mask=mask_chunk,
-                copy=False,
                 **ndcombine_kw,
             )
 
             if full:
                 (
                     comb_chunk,
-                    err_chunk,
                     mask_rej_chunk,
                     mask_thresh_chunk,
+                    std_chunk,
                     low_chunk,
                     upp_chunk,
                     nit_chunk,
-                    rejcode_chunk,
+                    output_flags_chunk,
                 ) = combined_chunk
-                mask_total_chunk = mask_chunk | mask_thresh_chunk | mask_rej_chunk
+                mask_total_chunk = _mask_total_from_parts(
+                    mask_chunk, mask_rej_chunk, mask_thresh_chunk
+                )
 
-                if err is None:
-                    err = np.empty(sh_comb, dtype=err_chunk.dtype)
+                if mask_total is None:
                     mask_shape = (ncombine, *sh_comb)
                     mask_total = np.empty(mask_shape, dtype=bool)
-                    mask_rej = np.empty(mask_shape, dtype=bool)
-                    mask_thresh = np.empty(mask_shape, dtype=bool)
+                if std_chunk is not None and std is None:
+                    std = np.empty(sh_comb, dtype=std_chunk.dtype)
+                if mask_rej_chunk is not None and mask_rej is None:
+                    mask_rej = np.empty((ncombine, *sh_comb), dtype=bool)
+                if mask_thresh_chunk is not None and mask_thresh is None:
+                    mask_thresh = np.empty((ncombine, *sh_comb), dtype=bool)
+                if low_chunk is not None and low is None:
                     low = np.empty(sh_comb, dtype=low_chunk.dtype)
+                if upp_chunk is not None and upp is None:
                     upp = np.empty(sh_comb, dtype=upp_chunk.dtype)
-                    if nit_chunk is not None:
-                        nit = np.empty(sh_comb, dtype=np.asarray(nit_chunk).dtype)
-                    if rejcode_chunk is not None:
-                        rejcode = np.empty(
-                            sh_comb, dtype=np.asarray(rejcode_chunk).dtype
-                        )
+                if nit_chunk is not None and nit is None:
+                    nit = np.empty(sh_comb, dtype=np.asarray(nit_chunk).dtype)
+                if output_flags_chunk is not None and output_flags_data is None:
+                    output_flags_data = np.empty(
+                        sh_comb, dtype=np.asarray(output_flags_chunk).dtype
+                    )
 
                 comb[chunk_slices] = comb_chunk
-                err[chunk_slices] = err_chunk
+                if std_chunk is not None:
+                    std[chunk_slices] = std_chunk
                 mask_slices = (slice(None), *chunk_slices)
                 mask_total[mask_slices] = mask_total_chunk
-                mask_rej[mask_slices] = mask_rej_chunk
-                mask_thresh[mask_slices] = mask_thresh_chunk
-                low[chunk_slices] = low_chunk
-                upp[chunk_slices] = upp_chunk
-                if nit is not None:
+                if mask_rej_chunk is not None:
+                    mask_rej[mask_slices] = mask_rej_chunk
+                if mask_thresh_chunk is not None:
+                    mask_thresh[mask_slices] = mask_thresh_chunk
+                if low_chunk is not None:
+                    low[chunk_slices] = low_chunk
+                if upp_chunk is not None:
+                    upp[chunk_slices] = upp_chunk
+                if nit_chunk is not None:
                     nit[chunk_slices] = nit_chunk
-                if rejcode is not None:
-                    rejcode[chunk_slices] = rejcode_chunk
+                if output_flags_chunk is not None:
+                    output_flags_data[chunk_slices] = output_flags_chunk
             else:
                 comb[chunk_slices] = combined_chunk
 
             del arr_chunk, mask_chunk, var_chunk
 
         if not full:
-            err = low = upp = mask_total = rejcode = None
+            std = low = upp = mask_total = output_flags_data = None
 
     # == Update header properly ====================================================== #
     # Update WCS or PHYSICAL keywords so that "lock frame wcs", etc, on SAO
@@ -634,20 +685,20 @@ def imcombine(
         comb=comb,
         hdr0=hdr0,
         output=output,
-        output_err=output_err,
+        output_std=output_std,
         output_low=output_low,
         output_upp=output_upp,
         output_nrej=output_nrej,
         output_mask=output_mask,
-        output_rejcode=output_rejcode,
-        err=err,
+        output_flags=output_flags,
+        std=std,
         low=low,
         upp=upp,
         mask_total=mask_total,
-        rejcode=rejcode,
+        output_flags_data=output_flags_data,
         int_dtype=int_dtype,
         dtype=dtype,
-        dtype_err=dtype_err,
+        dtype_std=dtype_std,
         dtype_low=dtype_low,
         dtype_upp=dtype_upp,
         output_verify=output_verify,
@@ -688,26 +739,25 @@ def imcombine(
         if return_dict:
             return {
                 "comb": comb,
-                "err": err,
                 "mask_total": mask_total,
                 "mask_rej": mask_rej,
                 "mask_thresh": mask_thresh,
+                "std": std,
                 "low": low,
                 "upp": upp,
                 "nit": nit,
-                "rejcode": rejcode,
+                "output_flags": output_flags_data,
             }
         else:
             return (
                 comb,
-                err,
-                mask_total,
                 mask_rej,
                 mask_thresh,
+                std,
                 low,
                 upp,
                 nit,
-                rejcode,
+                output_flags_data,
             )
     else:
         return comb
@@ -768,9 +818,6 @@ imcombine.__doc__ = f"""A helper function for ``imred.ndcombine`` to cope with F
         time of each FITS file. This is used only if scaling is done for
         exposure time (see `scale`).
 
-    irafmode : `bool`, optional.
-        Whether to use IRAF-like pixel restoration scheme.
-
     memlimit : float, optional
         Approximate memory limit in bytes for the temporary FITS stack. If the
         planned stack is larger, FITS inputs are read in row/column sections
@@ -784,12 +831,9 @@ imcombine.__doc__ = f"""A helper function for ``imred.ndcombine`` to cope with F
 
     output_xxx : path-like, optional
         The output path to the mask, number of rejected pixels at each
-        position, final ``nanstd(combined, ddof=ddof, axis=0)`` (if
-        `return_variance` is `False`) or ``nanvar(combined, ddof=ddof,
-        axis=0)`` (if `return_variance` is `True`) result, lower and upper
-        bounds for rejection, and the integer codes for the rejection algorithm
-        (see `mask_total`, `mask_rej`, `err`, `low`, `upp`, and `rejcode` in
-        Returns.)
+        position, ``std`` diagnostic, lower and upper bounds for rejection,
+        and integer output flags (see `mask_rej`, `mask_thresh`, `std`, `low`,
+        `upp`, `nit`, and `output_flags` in Returns.)
 
     return_dict : `bool`, optional.
         Whether to return the results as `dict` (works only if ``full=True``).
@@ -811,255 +855,79 @@ imcombine.__doc__ = f"""A helper function for ``imred.ndcombine`` to cope with F
 def ndcombine(
     arr: np.ndarray,
     mask: np.ndarray | None = None,
-    copy: bool = True,
-    blank: float = np.nan,
-    offsets: str | npt.ArrayLike | None = None,
     thresholds: tuple[float, float] | list[float] | None = None,
     zero: str | npt.ArrayLike | None = None,
     scale: str | npt.ArrayLike | None = None,
     weight: str | npt.ArrayLike | None = None,
-    zero_kw: dict[str, object] | None = None,
-    scale_kw: dict[str, object] | None = None,
     zero_to_0th: bool = True,
     scale_to_0th: bool = True,
-    zero_section: SectionLike = None,
-    scale_section: SectionLike = None,
+    zero_sigclip_kwargs: dict[str, object] | None = None,
+    scale_sigclip_kwargs: dict[str, object] | None = None,
     reject: str | None = None,
     cenfunc: str = "median",
+    clip_cen: str | None = None,
     sigma: float | tuple[float, float] | list[float] | None = None,
-    maxiters: int = 3,
+    maxiters: int = 5,
     ddof: int = 1,
     nkeep: int = 1,
     maxrej: int | None = None,
     n_minmax: tuple[int, int] | list[int] | None = None,
-    rdnoise: str | npt.ArrayLike | None = 0.0,
-    gain: str | npt.ArrayLike | None = 1.0,
-    snoise: str | npt.ArrayLike | None = 0.0,
+    rdnoise: float = 0.0,
+    gain: float = 1.0,
+    snoise: float = 0.0,
     pclip: float = -0.5,
     combine: str = "average",
-    dtype: str = "float32",
-    memlimit: float = 2.5e9,
-    irafmode: bool = True,
+    revert_on_nkeep: bool = True,
+    grow: float | None = None,
     verbose: bool = False,
     full: bool = False,
-    return_variance: bool = False,
 ) -> np.ndarray | tuple:
-    thresholds = [-np.inf, np.inf] if thresholds is None else list(thresholds)
-    zero_kw = _default_zsw_kw() if zero_kw is None else dict(zero_kw)
-    scale_kw = _default_zsw_kw() if scale_kw is None else dict(scale_kw)
+    """Combine an array stack using `imcombiners.ndcombine`.
+
+    Full diagnostics follow `imcombiners` order:
+    ``combined, mask_rej, mask_thresh, std, low, upp, nit, output_flags``.
+    """
     sigma = [3.0, 3.0] if sigma is None else sigma
     n_minmax = [1, 1] if n_minmax is None else n_minmax
-
-    if copy:
-        arr = arr.copy()
-
-    if np.array(arr).ndim == 1:
-        raise ValueError("1-D array combination is not supported!")
-
-    _mask = _set_mask(arr, mask)  # _mask = propagated through this function.
-    sigma_lower, sigma_upper = _set_sigma(sigma)
-    nkeep, maxrej = _set_keeprej(arr, nkeep, maxrej, axis=0)
-    cenfunc = _set_cenfunc(cenfunc)
     reject_fullname = _set_reject_name(reject)
-    maxiters = int(maxiters)
-    ddof = int(ddof)
-
-    combfunc = _set_combfunc(combine, nameonly=False, nan=True)
 
     if verbose and reject is not None:
-        logger.info("- Rejection")
-        if thresholds != [-np.inf, np.inf]:
-            logger.info("-- thresholds (low, upp) = %s", thresholds)
-        logger.info("-- reject=%s (irafmode=%s)", reject, irafmode)
         logger.info(
-            "--       params: nkeep=%s, maxrej=%s, maxiters=%s, cenfunc=%s",
-            nkeep,
-            maxrej,
-            maxiters,
-            cenfunc,
+            "- imcombiners.ndcombine: combine=%s reject=%s full=%s",
+            combine,
+            reject_fullname,
+            full,
         )
-        if reject_fullname == "sigclip":
-            logger.info("  (for sigclip): sigma=%s, ddof=%s", sigma, ddof)
-        elif reject_fullname == "ccdclip":
-            logger.info(
-                "  (for ccdclip): gain=%s, rdnoise=%s, snoise=%s", gain, rdnoise, snoise
-            )
-        # elif reject_fullnme == "pclip":
-        #   print(f"    (for pclip)  : spclip={pclip}")
-        # elif reject_fullname == "minmax":
-        # print(f" (for minmaxclip): n_minmax={n_minmax}")
 
-    # === 01 - Thresholding + Initial masking ======================================== #
-    # Updating mask: _mask = _mask | mask_thresh
-    mask_thresh = _set_thresh_mask(
-        arr=arr, mask=_mask, thresholds=thresholds, update_mask=True
-    )
-
-    # if safemode:
-    #     # Backup the pixels which are rejected by thresholding and # initial
-    #     mask for future restoration (see below) for debugging # purpose.
-    #     backup_thresh = arr[mask_thresh]
-    #     backup_thresh_inmask = arr[_mask]
-
-    # TODO: remove this np.nan and instead, let `get_zsw` to accept mask.
-    arr[_mask] = np.nan
-    # -------------------------------------------------------------------------------- #
-
-    # === 02 - Calculate zero, scale, weights ======================================== #
-    # This should be done before rejection but after threshold masking..
-    zeros, scales, weights = get_zsw(
-        arr=arr,
+    return imc.ndcombine(
+        np.asarray(arr),
+        mask=mask,
+        thresholds=thresholds,
+        combine=combine,
+        reject=reject_fullname,
+        sigma=tuple(sigma),
+        cenfunc=cenfunc,
+        clip_cen=clip_cen,
+        maxiters=maxiters,
+        ddof=ddof,
+        nkeep=nkeep,
+        maxrej=maxrej,
+        n_minmax=tuple(n_minmax),
+        rdnoise=rdnoise,
+        gain=gain,
+        snoise=snoise,
+        pclip=pclip,
         zero=zero,
         scale=scale,
         weight=weight,
-        zero_kw=zero_kw,
-        scale_kw=scale_kw,
         zero_to_0th=zero_to_0th,
         scale_to_0th=scale_to_0th,
-        zero_section=zero_section,
-        scale_section=scale_section,
+        zero_sigclip_kwargs=zero_sigclip_kwargs,
+        scale_sigclip_kwargs=scale_sigclip_kwargs,
+        revert_on_nkeep=revert_on_nkeep,
+        grow=grow,
+        full=full,
     )
-    arr = do_zs(arr, zeros=zeros, scales=scales)
-    # -------------------------------------------------------------------------------- #
-
-    # === 02 - Rejection ============================================================== #
-    if isinstance(reject_fullname, str):
-        if reject_fullname == "sigclip":
-            _mask_rej = sigclip_mask(
-                arr,
-                mask=_mask,
-                sigma_lower=sigma_lower,
-                sigma_upper=sigma_upper,
-                maxiters=maxiters,
-                ddof=ddof,
-                nkeep=nkeep,
-                maxrej=maxrej,
-                cenfunc=cenfunc,
-                axis=0,
-                irafmode=irafmode,
-                full=full,
-            )
-        elif reject_fullname == "minmax":
-            _mask_rej = minmax_mask(arr, mask=_mask, n_minmax=n_minmax, full=full)
-        elif reject_fullname == "ccdclip":
-            _mask_rej = ccdclip_mask(
-                arr,
-                mask=_mask,
-                sigma_lower=sigma_lower,
-                sigma_upper=sigma_upper,
-                scale_ref=np.mean(scales),
-                zero_ref=np.mean(zeros),
-                maxiters=maxiters,
-                ddof=ddof,
-                nkeep=nkeep,
-                maxrej=maxrej,
-                cenfunc=cenfunc,
-                axis=0,
-                gain=gain,
-                rdnoise=rdnoise,
-                snoise=snoise,
-                irafmode=irafmode,
-                full=full,
-            )
-        elif reject_fullname == "pclip":
-            pass
-        else:
-            raise ValueError("reject not understood.")
-        if full:
-            _mask_rej, low, upp, nit, rejcode = _mask_rej
-        # _mask is a subset of _mask_rej, so to extract pixels which are
-        # masked PURELY due to the rejection is:
-        mask_rej = _mask_rej ^ _mask
-    elif reject_fullname is None:
-        mask_rej = _set_mask(arr, None)
-        if full:
-            low = bn.nanmin(arr, axis=0)
-            upp = bn.nanmax(arr, axis=0)
-            nit = None
-            rejcode = None
-    else:
-        raise ValueError("reject not understood.")
-
-    if reject is not None and verbose:
-        logger.info("Done.")
-
-    _mask |= mask_rej
-
-    # -------------------------------------------------------------------------------- #
-
-    # TODO: add "grow" rejection here?
-
-    # === 03 - combine ================================================================ #
-    # Replace rejected / masked pixel to NaN and backup for debugging purpose.
-    # This is done to reduce memory (instead of doing _arr = arr.copy())
-    # backup_nan = arr[_mask]
-    if verbose:
-        logger.info("- Combining")
-        logger.info("-- combine = %s", combine)
-    arr[_mask] = np.nan
-
-    # Combine and calc sigma
-    # Original path (fallback when IMOPS_USE_NUMBA is False or combine not supported):
-    # comb = combfunc(arr, axis=0)
-    if config.IMOPS_USE_NUMBA:
-        has_nan = not np.all(np.isfinite(arr))
-        comb_numba = combine_along_axis0_numba(arr, combine, has_nan=has_nan)
-        comb = comb_numba if comb_numba is not None else combfunc(arr, axis=0)
-    else:
-        comb = combfunc(arr, axis=0)
-    if verbose:
-        logger.info("Done.")
-
-    # Restore NaN-replaced pixels of arr for debugging purpose.
-    # arr[_mask] = backup_nan
-    # arr[mask_thresh] = backup_thresh_inmask
-    if full:
-        if verbose:
-            logger.info("- Error calculation")
-            logger.info("-- to skip this, use `full=False`")
-            logger.info("-- return_variance=%s, ddof=%s", return_variance, ddof)
-        if return_variance:
-            err = bn.nanvar(arr, ddof=ddof, axis=0)
-        else:
-            err = bn.nanstd(arr, ddof=ddof, axis=0)
-        if verbose:
-            logger.info("Done.")
-        return comb, err, mask_rej, mask_thresh, low, upp, nit, rejcode
-    else:
-        return comb
 
 
-ndcombine.__doc__ = f""" Combines the given arr assuming no additional offsets.
-
-    {docstrings.NDCOMB_NOT_IMPLEMENTED(indent=4)}
-
-    Offsets are not implemented in ``imred.ndcombine``; use ``imred.imcombine``
-    for FITS inputs with offsets.
-
-    Parameters
-    ----------
-    arr : `~numpy.ndarray`
-        The array to be combined along axis 0.
-
-    mask : `~numpy.ndarray`, optional.
-        The mask of bad pixels. If given, it must satisfy ``mask.shape[0]``
-        identical to the number of images.
-
-    copy : `bool`, optional.
-        Whether to copy the input array. Set to `True` if you want to keep the
-        original array unchanged. Otherwise, the original array may be
-        destroyed.
-
-    {docstrings.OFFSETS_SHORT(indent=4)}
-
-    {docstrings.NDCOMB_PARAMETERS_COMMON(indent=4)}
-
-    Returns
-    -------
-    comb : `~numpy.ndarray`
-        The combined array.
-
-    {docstrings.NDCOMB_RETURNS_COMMON(indent=4)}
-
-    {docstrings.IMCOMBINE_LINK(indent=4)}
-    """
+ndcombine.__doc__ = imc.ndcombine.__doc__

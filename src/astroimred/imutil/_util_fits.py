@@ -6,9 +6,15 @@ from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
+import imcombiners as imc
 import numpy as np
 import numpy.typing as npt
-from astro_ndslice import calc_offset_physical, calc_offset_wcs, slicefy
+from astro_ndslice import (
+    calc_offset_physical,
+    calc_offset_wcs,
+    slice_from_string,
+    slicefy,
+)
 from astropy.io import fits
 from astropy.io.fits.verify import VerifyError
 from astropy.nddata import CCDData
@@ -21,9 +27,132 @@ from astroimred.fitsmgmt.header import update_tlm
 from astroimred.fitsmgmt.io import _parse_data_header, load_ccd, write2fits
 from astroimred.logging import logger
 
-from ._util_comb import _set_combfunc, _set_gain_rdns, get_zsw
-
 Key_or_Val = str | npt.ArrayLike | None
+
+
+def _normalize_stat_name(value: Any) -> Any:
+    """Normalize legacy zero/scale statistic aliases to imcombiners names."""
+    if not isinstance(value, str):
+        return value
+    aliases = {
+        "avg_sc": "mean_sc",
+        "average_sc": "mean_sc",
+        "medi_sc": "median_sc",
+    }
+    return aliases.get(value.lower(), value)
+
+
+def _normalize_sigclip_kwargs(kwargs: dict[str, Any] | None) -> dict[str, Any] | None:
+    """Return imcombiners-compatible sigma-clipped-statistic kwargs."""
+    if kwargs is None:
+        return None
+    out = dict(kwargs)
+    out.pop("axis", None)
+    if "std_ddof" in out and "ddof" not in out:
+        out["ddof"] = out.pop("std_ddof")
+    else:
+        out.pop("std_ddof", None)
+    stdfunc = out.pop("stdfunc", "std")
+    if stdfunc != "std":
+        raise ValueError("imcombiners sigma-clipped statistics support std only.")
+    return out
+
+
+def _stat_workspace(arr: np.ndarray, section: str | None) -> np.ndarray:
+    """Return an ``(N, M, 1)`` workspace for imcombiners plane statistics."""
+    if section is None:
+        selected = np.asarray(arr)
+    else:
+        try:
+            stat_slices = slice_from_string(section, fits_convention=True)
+        except (AttributeError, ValueError):
+            step = int(section)
+            selected = np.asarray(arr).reshape(arr.shape[0], -1)[:, ::step]
+            return selected.reshape(selected.shape[0], -1, 1)
+        selected = np.asarray(arr)[(slice(None), *stat_slices)]
+    return selected.reshape(selected.shape[0], -1, 1)
+
+
+def _resolve_plane_values(
+    name: str,
+    arr: np.ndarray,
+    value: Key_or_Val,
+    *,
+    sigclip_kwargs: dict[str, Any] | None = None,
+    section: str | None = None,
+    nonzero: bool = False,
+) -> np.ndarray:
+    """Resolve scalar, vector, callable, or named-stat values via imcombiners."""
+    if value is None:
+        fill = 1.0 if nonzero else 0.0
+        return np.full(arr.shape[0], fill, dtype=float)
+
+    workspace = _stat_workspace(np.asarray(arr), section)
+    resolved = imc.resolve_zero_scale(
+        name,
+        _normalize_stat_name(value),
+        workspace,
+        nonzero=nonzero,
+        sigclip_kwargs=_normalize_sigclip_kwargs(sigclip_kwargs),
+    )
+    if resolved is None:
+        fill = 1.0 if nonzero else 0.0
+        return np.full(arr.shape[0], fill, dtype=float)
+    return np.asarray(resolved, dtype=float).reshape(-1)
+
+
+def _resolve_zsw(
+    arr: np.ndarray,
+    *,
+    zero: Key_or_Val,
+    scale: Key_or_Val,
+    weight: Key_or_Val,
+    zero_kw: dict[str, Any] | None,
+    scale_kw: dict[str, Any] | None,
+    zero_section: str | None,
+    scale_section: str | None,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Resolve zero/scale/weight values with imcombiners plane statistics."""
+    return (
+        _resolve_plane_values(
+            "zero",
+            arr,
+            zero,
+            sigclip_kwargs=zero_kw,
+            section=zero_section,
+        ),
+        _resolve_plane_values(
+            "scale",
+            arr,
+            scale,
+            sigclip_kwargs=scale_kw,
+            section=scale_section,
+            nonzero=True,
+        ),
+        _resolve_plane_values("weight", arr, weight, section=scale_section),
+    )
+
+
+def _expand_ccdclip_parameter(
+    name: str,
+    value: Key_or_Val,
+    ncombine: int,
+    dtype: npt.DTypeLike,
+) -> tuple[bool, np.ndarray]:
+    """Return whether to read a header keyword and its default vector."""
+    if isinstance(value, str):
+        return True, np.ones(ncombine, dtype=dtype)
+
+    arr = np.atleast_1d(value).astype(dtype)
+    if arr.size == ncombine:
+        arr = arr.ravel()
+    elif arr.size == 1:
+        arr = np.full(ncombine, arr.item(), dtype=dtype)
+    else:
+        raise ValueError(f"{name} size must be 1 or equal to ncombine.")
+    if not np.all(np.isfinite(arr)):
+        raise ValueError(f"{name} contains NaN or inf.")
+    return False, arr
 
 
 def _trim_slices(trimsec: str | None, shape: Sequence[int]) -> tuple[slice, ...]:
@@ -377,9 +506,15 @@ def extract_stack_metadata(
 
     # === 1. Determine which calibration keywords are needed for rejection ===
     if reject_fullname == "ccdclip":
-        extract_gain, gns = _set_gain_rdns(gain, ncombine, dtype=dtype)
-        extract_rdnoise, rds = _set_gain_rdns(rdnoise, ncombine, dtype=dtype)
-        extract_snoise, sns = _set_gain_rdns(snoise, ncombine, dtype=dtype)
+        extract_gain, gns = _expand_ccdclip_parameter(
+            "gain", gain, ncombine, dtype=dtype
+        )
+        extract_rdnoise, rds = _expand_ccdclip_parameter(
+            "rdnoise", rdnoise, ncombine, dtype=dtype
+        )
+        extract_snoise, sns = _expand_ccdclip_parameter(
+            "snoise", snoise, ncombine, dtype=dtype
+        )
     else:
         extract_gain, gns = False, 1
         extract_rdnoise, rds = False, 0
@@ -531,8 +666,8 @@ def check_stack_memory(
     # Copied from ccdproc v 2.0.1
     # https://github.com/astropy/ccdproc/blob/b9ec64dfb59aac1d9ca500ad172c4eb31ec305f8/ccdproc/combiner.py#L710
     # Set a memory use factor based on profiling
-    combmeth = _set_combfunc(combine)
-    memory_factor = 3.0 if combmeth == "median" else 2.0
+    combine_key = str(combine).lower()
+    memory_factor = 3.0 if combine_key in {"med", "median"} else 2.0
     memory_factor *= 1.5
     mem_req = memory_factor * stacksize
     if memlimit is None or memlimit <= 0 or mem_req <= memlimit:
@@ -636,15 +771,13 @@ def calculate_zsw(
         else:
             continue
 
-        z_i, s_i, w_i = get_zsw(
-            arr=np.array(data[None, :]),  # make a fake (N+1)-D array
+        z_i, s_i, w_i = _resolve_zsw(
+            arr=np.asarray(data[None, :]),  # make a fake (N+1)-D array
             zero=zero if calc_zero else None,
             scale=scale if calc_scale else None,
             weight=weight if calc_weight else None,
             zero_kw=zero_kw,
             scale_kw=scale_kw,
-            zero_to_0th=False,  # to retain original zero
-            scale_to_0th=False,  # to retain original scale
             zero_section=zero_section,
             scale_section=scale_section,
         )
@@ -828,15 +961,13 @@ def load_full_stack(
         # TODO: let get_zsw to get functionals for zsw, so _set_calc_zsw
         # will not be repeated for every iteration.
         scale_i = scales[i] if extract_exptime else scale
-        z_i, s_i, w_i = get_zsw(
-            arr=np.array(data[None, :]),  # make a fake (N+1)-D array
+        z_i, s_i, w_i = _resolve_zsw(
+            arr=np.asarray(data[None, :]),  # make a fake (N+1)-D array
             zero=zero,
             scale=scale_i,
             weight=weight,
             zero_kw=zero_kw,
             scale_kw=scale_kw,
-            zero_to_0th=False,  # to retain original zero
-            scale_to_0th=False,  # to retain original scale
             zero_section=zero_section,
             scale_section=scale_section,
         )
@@ -975,20 +1106,20 @@ def write_imcombine_outputs(
     comb: CCDData,
     hdr0: fits.Header,
     output: StrPathLike | None,
-    output_err: StrPathLike | None,
+    output_std: StrPathLike | None,
     output_low: StrPathLike | None,
     output_upp: StrPathLike | None,
     output_nrej: StrPathLike | None,
     output_mask: StrPathLike | None,
-    output_rejcode: StrPathLike | None,
-    err: np.ndarray | None,
+    output_flags: StrPathLike | None,
+    std: np.ndarray | None,
     low: np.ndarray | None,
     upp: np.ndarray | None,
     mask_total: np.ndarray | None,
-    rejcode: np.ndarray | None,
+    output_flags_data: np.ndarray | None,
     int_dtype: npt.DTypeLike,
     dtype: npt.DTypeLike,
-    dtype_err: npt.DTypeLike,
+    dtype_std: npt.DTypeLike,
     dtype_low: npt.DTypeLike | None,
     dtype_upp: npt.DTypeLike | None,
     output_verify: str,
@@ -1013,11 +1144,11 @@ def write_imcombine_outputs(
         except VerifyError as err:
             raise VerifyError("Use output_verify='fix'") from err
 
-    if output_err is not None:
-        if err is None:
-            raise ValueError("err is required when output_err is requested.")
-        err = err.astype(dtype_err)
-        write2fits(err, hdr0, output_err, return_ccd=False, **write_kw)
+    if output_std is not None:
+        if std is None:
+            raise ValueError("std is required when output_std is requested.")
+        std = std.astype(dtype_std)
+        write2fits(std, hdr0, output_std, return_ccd=False, **write_kw)
 
     if output_low is not None:
         if low is None:
@@ -1045,10 +1176,12 @@ def write_imcombine_outputs(
             mask_total.astype(np.uint8), hdr0, output_mask, return_ccd=False, **write_kw
         )
 
-    if output_rejcode is not None:
-        if rejcode is None:
-            raise ValueError("rejcode is required when output_rejcode is requested.")
-        write2fits(rejcode, hdr0, output_rejcode, return_ccd=False, **write_kw)
+    if output_flags is not None:
+        if output_flags_data is None:
+            raise ValueError(
+                "output_flags_data is required when output_flags is requested."
+            )
+        write2fits(output_flags_data, hdr0, output_flags, return_ccd=False, **write_kw)
 
 
 def write_imcombine_logfile(

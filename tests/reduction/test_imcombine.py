@@ -5,8 +5,6 @@ import pytest
 from astropy.io import fits
 from astropy.nddata import CCDData
 
-import astroimred.imutil as imutil
-from astroimred.imutil._util_comb import get_zsw
 from astroimred.imutil.imcombine import imcombine, ndcombine
 
 
@@ -106,14 +104,14 @@ def _expected_no_reject(images, raw_offsets, combine="average", zero=None, scale
         warnings.simplefilter("ignore", RuntimeWarning)
         return {
             "comb": _combine_expected(stack, combine),
-            "err": np.nanstd(stack, axis=0, ddof=1),
-            "low": np.nanmin(stack, axis=0),
-            "upp": np.nanmax(stack, axis=0),
+            "std": None,
+            "low": None,
+            "upp": None,
             "mask_total": mask,
-            "mask_rej": mask.copy(),
-            "mask_thresh": mask.copy(),
+            "mask_rej": None,
+            "mask_thresh": None,
             "nit": None,
-            "rejcode": None,
+            "output_flags": None,
             "out_shape": out_shape,
         }
 
@@ -122,17 +120,23 @@ def _assert_imcombine_full(result, expected):
     np.testing.assert_allclose(
         result["comb"].data, expected["comb"], rtol=1e-6, atol=1e-6, equal_nan=True
     )
-    for key in ["err", "low", "upp"]:
-        np.testing.assert_allclose(
-            result[key],
-            expected[key],
-            rtol=1e-6,
-            atol=1e-6,
-            equal_nan=True,
-            err_msg=key,
-        )
+    for key in ["std", "low", "upp"]:
+        if expected[key] is None:
+            assert result[key] is None
+        else:
+            np.testing.assert_allclose(
+                result[key],
+                expected[key],
+                rtol=1e-6,
+                atol=1e-6,
+                equal_nan=True,
+                err_msg=key,
+            )
     for key in ["mask_total", "mask_rej", "mask_thresh"]:
-        np.testing.assert_array_equal(result[key], expected[key])
+        if expected[key] is None:
+            assert result[key] is None
+        else:
+            np.testing.assert_array_equal(result[key], expected[key])
 
     if expected["nit"] is None:
         assert result["nit"] is None
@@ -142,39 +146,10 @@ def _assert_imcombine_full(result, expected):
         )
         np.testing.assert_array_equal(nit, expected["nit"])
 
-    if expected["rejcode"] is None:
-        assert result["rejcode"] is None
+    if expected["output_flags"] is None:
+        assert result["output_flags"] is None
     else:
-        np.testing.assert_array_equal(result["rejcode"], expected["rejcode"])
-
-
-def test_stack_fits_removed():
-    """`stack_FITS` has been replaced by `select_fits`."""
-    import astroimred.reduction.combutil as _combutil
-
-    assert not hasattr(_combutil, "stack_FITS")
-    assert not hasattr(imutil, "stack_FITS")
-
-
-def test_get_zsw_does_not_mutate_kwargs():
-    """Caller-owned sigma-clip kwargs must survive repeated calls."""
-    arr = np.arange(27, dtype=float).reshape(3, 3, 3)
-    zero_kw = {"sigma": 2.0, "maxiters": 1, "axis": 0}
-
-    get_zsw(
-        arr,
-        zero="median_sc",
-        scale=None,
-        weight=None,
-        zero_kw=zero_kw,
-        scale_kw=None,
-        zero_to_0th=True,
-        scale_to_0th=True,
-        zero_section=None,
-        scale_section=None,
-    )
-
-    assert zero_kw == {"sigma": 2.0, "maxiters": 1, "axis": 0}
+        np.testing.assert_array_equal(result["output_flags"], expected["output_flags"])
 
 
 class TestNDCombine:
@@ -249,45 +224,59 @@ class TestNDCombine:
         # Remaining: 10, 10, 10 -> Average 10.
         np.testing.assert_allclose(combined, 10.0, rtol=1e-6)
 
-    def test_numba_sigclip_aux_analytical(self):
-        """The Numba path must preserve NaN-aware rejection and combine math."""
-        from astroimred.imutil import _config as _imutil_config
-
-        old = _imutil_config.IMOPS_USE_NUMBA
-        imutil.set_use_numba(True)
-        try:
-            yy, xx = np.mgrid[:2, :3]
-            base = yy * 10.0 + xx
-            arr = np.stack([base + value for value in [10.0, 10.0, 10.0, 1000.0]])
-            comb, err, mask_rej, mask_thresh, low, upp, nit, rejcode = ndcombine(
-                arr,
-                combine="average",
-                reject="sigclip",
-                sigma=[1.0, 1.0],
-                cenfunc="median",
-                maxiters=5,
-                ddof=1,
-                nkeep=1,
-                irafmode=False,
-                full=True,
-            )
-        finally:
-            imutil.set_use_numba(old)
+    def test_sigclip_aux_analytical(self):
+        """imcombiners sigclip preserves NaN-aware rejection and combine math."""
+        yy, xx = np.mgrid[:2, :3]
+        base = yy * 10.0 + xx
+        arr = np.stack([base + value for value in [10.0, 10.0, 10.0, 1000.0]])
+        comb, mask_rej, mask_thresh, std, low, upp, nit, output_flags = ndcombine(
+            arr,
+            combine="average",
+            reject="sigclip",
+            sigma=[1.0, 1.0],
+            cenfunc="median",
+            maxiters=5,
+            ddof=1,
+            nkeep=1,
+            full=True,
+        )
 
         expected_mask = np.zeros(arr.shape, dtype=bool)
         expected_mask[3] = True
         np.testing.assert_allclose(comb, base + 10.0, rtol=1e-6)
-        np.testing.assert_allclose(err, 0.0, atol=1e-6)
         np.testing.assert_array_equal(mask_rej, expected_mask)
-        np.testing.assert_array_equal(mask_thresh, np.zeros_like(expected_mask))
+        assert mask_thresh is None
+        np.testing.assert_allclose(std, 0.0, atol=1e-6)
         np.testing.assert_allclose(low, base + 10.0, rtol=1e-6)
         np.testing.assert_allclose(upp, base + 10.0, rtol=1e-6)
         np.testing.assert_array_equal(nit, 2 * np.ones(base.shape, dtype=np.uint8))
-        np.testing.assert_array_equal(rejcode, 2 * np.ones(base.shape, dtype=np.uint8))
+        np.testing.assert_array_equal(
+            output_flags, np.zeros(base.shape, dtype=np.uint8)
+        )
 
 
 class TestImCombine:
     """Tests for `~astroimred.imutil.imcombine` wrapper with FITS files."""
+
+    def test_zero_scale_stats_use_imc_resolver_without_mutating_kwargs(self, tmp_path):
+        paths = []
+        for i, offset in enumerate([0.0, 10.0, 20.0]):
+            data = np.arange(9, dtype=float).reshape(3, 3) + offset
+            path = tmp_path / f"zstat_{i}.fits"
+            _write_fits(path, data)
+            paths.append(path)
+
+        zero_kw = {"sigma": 2.0, "maxiters": 1, "axis": 0}
+        result = imcombine(
+            paths,
+            zero="median_sc",
+            zero_kw=zero_kw,
+            combine="average",
+            reject="none",
+        )
+
+        np.testing.assert_allclose(result.data, np.arange(9).reshape(3, 3))
+        assert zero_kw == {"sigma": 2.0, "maxiters": 1, "axis": 0}
 
     def test_imcombine_files(self, tmp_path):
         """Test combining FITS files."""
@@ -364,14 +353,20 @@ class TestImCombine:
         np.testing.assert_allclose(
             chunked["comb"].data, full["comb"].data, rtol=1e-6, equal_nan=True
         )
-        for key in ["err", "low", "upp"]:
-            np.testing.assert_allclose(
-                chunked[key], full[key], rtol=1e-6, equal_nan=True
-            )
+        for key in ["std", "low", "upp"]:
+            if full[key] is None:
+                assert chunked[key] is None
+            else:
+                np.testing.assert_allclose(
+                    chunked[key], full[key], rtol=1e-6, equal_nan=True
+                )
         for key in ["mask_total", "mask_rej", "mask_thresh"]:
-            np.testing.assert_array_equal(chunked[key], full[key])
+            if full[key] is None:
+                assert chunked[key] is None
+            else:
+                np.testing.assert_array_equal(chunked[key], full[key])
         assert chunked["nit"] is None
-        assert chunked["rejcode"] is None
+        assert chunked["output_flags"] is None
 
     def test_user_offsets_zero_scale_average_aux_analytical(self, tmp_path):
         """User offsets plus zero/scale should match direct pixel math."""
@@ -496,14 +491,14 @@ class TestImCombine:
         expected_mask[3] = True
         expected = {
             "comb": comb_expected(base),
-            "err": np.sqrt(50.0) * np.ones_like(base),
-            "low": base,
-            "upp": base + 100.0,
+            "std": None,
+            "low": base + 10.0,
+            "upp": base + 20.0,
             "mask_total": expected_mask,
             "mask_rej": expected_mask.copy(),
-            "mask_thresh": np.zeros_like(expected_mask),
+            "mask_thresh": None,
             "nit": np.ones(base.shape, dtype=np.uint8),
-            "rejcode": np.zeros(base.shape, dtype=np.uint8),
+            "output_flags": np.zeros(base.shape, dtype=np.uint8),
             "out_shape": base.shape,
         }
         _assert_imcombine_full(result, expected)
@@ -528,7 +523,6 @@ class TestImCombine:
             maxiters=5,
             ddof=1,
             nkeep=1,
-            irafmode=False,
             full=True,
             return_dict=True,
             memlimit=300,
@@ -538,14 +532,14 @@ class TestImCombine:
         expected_mask[3] = True
         expected = {
             "comb": base + 10.0,
-            "err": np.zeros_like(base),
+            "std": np.zeros_like(base),
             "low": base + 10.0,
             "upp": base + 10.0,
             "mask_total": expected_mask,
             "mask_rej": expected_mask.copy(),
-            "mask_thresh": np.zeros_like(expected_mask),
+            "mask_thresh": None,
             "nit": 2 * np.ones(base.shape, dtype=np.uint8),
-            "rejcode": 2 * np.ones(base.shape, dtype=np.uint8),
+            "output_flags": np.zeros(base.shape, dtype=np.uint8),
             "out_shape": base.shape,
         }
         _assert_imcombine_full(result, expected)

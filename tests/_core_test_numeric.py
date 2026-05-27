@@ -3,19 +3,14 @@
 import numpy as np
 import pytest
 
-from astroimred._core import geometry, numeric
+from astroimred._core import numeric
 
 RTOL = 1e-6
 ATOL = 1e-8
 
 
-class TestWeightedAvg:
-    """Tests for weighted_avg function."""
-
-    def test_numeric_owns_helper(self):
-        """Moved math helpers are not re-exported from geometry."""
-        assert hasattr(numeric, "sstd")
-        assert not hasattr(geometry, "weighted_avg")
+class TestWvg:
+    """Tests for wvg function."""
 
     def test_known_values(self):
         """Test weighted average with known values."""
@@ -24,18 +19,31 @@ class TestWeightedAvg:
 
         # Manual calculation:
         # w = 1/err^2 = [100, 25, 100]
-        # weighted_avg = (1*100 + 2*25 + 3*100) / (100+25+100)
+        # wvg = (1*100 + 2*25 + 3*100) / (100+25+100)
         #              = (100 + 50 + 300) / 225 = 450/225 = 2.0
-        result = numeric.weighted_avg(val, err)
-        # Result is (weighted_avg, weighted_std_err)
-        np.testing.assert_allclose(result[0], 2.0, rtol=RTOL, atol=ATOL)
+        result = numeric.wvg(val, err=err)
+        np.testing.assert_allclose(result, 2.0, rtol=RTOL, atol=ATOL)
 
     def test_equal_weights(self):
         """Test that equal weights give simple mean."""
         val = np.array([1.0, 2.0, 3.0, 4.0, 5.0])
         err = np.array([1.0, 1.0, 1.0, 1.0, 1.0])
-        result = numeric.weighted_avg(val, err)
-        np.testing.assert_allclose(result[0], 3.0, rtol=RTOL, atol=ATOL)
+        result = numeric.wvg(val, err=err)
+        np.testing.assert_allclose(result, 3.0, rtol=RTOL, atol=ATOL)
+
+    def test_inverse_variance_input(self):
+        """Already-computed inverse variance should be usable directly."""
+        val = np.array([1.0, 2.0, 3.0])
+        ivar = np.array([100.0, 25.0, 100.0])
+        result = numeric.wvg(val, ivar=ivar)
+        np.testing.assert_allclose(result, 2.0, rtol=RTOL, atol=ATOL)
+
+    def test_variance_input(self):
+        """Variance input should avoid square-rooting when errors are unavailable."""
+        val = np.array([1.0, 2.0, 3.0])
+        var = np.array([0.01, 0.04, 0.01])
+        result = numeric.wvg(val, var=var)
+        np.testing.assert_allclose(result, 2.0, rtol=RTOL, atol=ATOL)
 
     def test_axis_combines_stack(self):
         """Axis selection should support image-stack style weighted averages."""
@@ -47,22 +55,23 @@ class TestWeightedAvg:
         )
         err = np.ones_like(val)
 
-        avg, stderr = numeric.weighted_avg(val, err, axis=0)
+        avg, stderr = numeric.wvg(val, err=err, axis=0, return_se=True)
 
         np.testing.assert_allclose(avg, [[1.5, 3.0], [4.5, 6.0]])
         np.testing.assert_allclose(stderr, np.sqrt(0.5) * np.ones((2, 2)))
 
+    def test_one_uncertainty_representation_required(self):
+        """Exactly one of err, var, or ivar must be supplied."""
+        val = np.array([1.0, 2.0])
+        err = np.array([1.0, 1.0])
+        with pytest.raises(ValueError):
+            numeric.wvg(val)
+        with pytest.raises(ValueError):
+            numeric.wvg(val, err=err, ivar=err)
+
 
 class TestMinMaxMed1D:
     """Tests for min_max_med_1d function."""
-
-    def test_numeric_owns_helpers(self):
-        """Moved math helpers are not re-exported from geometry."""
-        assert not hasattr(geometry, "min_max_med_1d")
-        assert not hasattr(geometry, "mean_std_1d")
-        assert not hasattr(geometry, "quantile_lh")
-        assert not hasattr(geometry, "quantile_sigma")
-        assert not hasattr(geometry, "binning")
 
     def test_odd_length(self):
         """Odd-length arrays should return the central sorted value."""
@@ -204,11 +213,6 @@ class TestBinning:
 
 class TestGainConversion:
     """Tests for gain conversion helpers."""
-
-    def test_numeric_owns_helpers(self):
-        """Moved gain helpers are not re-exported from geometry."""
-        assert not hasattr(geometry, "dB2epadu")
-        assert not hasattr(geometry, "epadu2dB")
 
     def test_roundtrip(self):
         """dB and electron/ADU conversions should round-trip."""

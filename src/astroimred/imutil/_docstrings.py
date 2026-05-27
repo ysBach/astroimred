@@ -67,13 +67,6 @@ cenfunc : `str`, optional.
 
         * median if  `cenfunc` in ``{'med', 'medi', 'median'}``
         * average if `cenfunc` in ``{'avg', 'average', 'mean'}``
-        * lower median if `cenfunc` in ``{'lmed', 'lmd', 'lmedian'}``
-
-    The lower median means the median which takes the lower value when even number of data is left.
-    This is suggested to be robust against cosmic-ray hit according to IRAF IMCOMBINE manual.
-
-irafmode : `bool`, optional.
-        Whether to use IRAF-like pixel restoration scheme. Default is `True`.
 """,
         indent,
     )
@@ -270,17 +263,14 @@ combine: `str`, optional.
         - average if ``'avg'|'average'|'mean'``
         - lower median if ``'lmed'|'lmd'|'lmedian'``
         - sum if ``'sum'``
-        - bitwise AND if ``'&'|'&&'|'and'|'bitwise_and'``
-        - bitwise OR if ``'|'|'||'|'or'|'bitwise_or'``
-        - bitwise XOR if ``'^'|'xor'|'bitwise_xor'``
+        - min/max if ``'min'`` or ``'max'``
+        - variance if ``'variance'|'var'``
+        - weighted average if ``'weighted_average'|'wvg'``
 
     .. note::
         The lower median means the median which takes the lower value when even number of data is left.
         This is suggested to be robust against cosmic-ray hit according to IRAF IMCOMBINE_ manual.
-        Currently there is no lmedian-alternative in bottleneck or numpy, so a custom-made version is
-        used (in numpy_util.py), which is nothing but a simple modification to the original numpy
-        source codes, and this is much slower than bottleneck's median. I think it must be
-        re-implemented in the future.""",
+        The combine/rejection kernels are provided by ``imcombiners``.""",
         indent,
     )
 
@@ -288,31 +278,25 @@ combine: `str`, optional.
 def NDCOMB_RETURNS_COMMON(indent=0):
     return _fix(
         """
-err : `~numpy.ndarray`
-    The standard deviation map (if `return_variance` is `False`) or the variance map (if
-    `return_variance` is `True`) of the survived pixels (with `ddof`).
+std : `~numpy.ndarray` or `None`
+    The spread diagnostic returned by ``imcombiners``. It is available for
+    sigma/CCD clipping and is `None` for rejection algorithms without a spread
+    diagnostic.
 
-mask_total : `~numpy.ndarray` (dtype `bool`)
-    The full mask, ``N+1``-D. Identical to original FITS files' masks propagated with ``| mask_rej |
-    mask_thresh`` below. The total number of rejected pixels at each position can be obtained by
-    ``np.count_nonzero(mask_total, axis=0)``.
+mask_rej, mask_thresh : `~numpy.ndarray` or `None`
+    The masks from the rejection process and thresholding process
+    (`thresholds`). Thresholding is done prior to rejection or zero/scale
+    normalization. `None` means that diagnostic category was not requested or
+    not applicable.
 
-mask_rej, mask_thresh : `~numpy.ndarray`(dtype `bool`)
-    The masks (``N``-D) from the rejection process and thresholding process (`thresholds`). Threshold
-    is done prior to any rejection or scaling/zeroing. Number of rejected pixels at each position for
-    each process can be obtained by, e.g., ``nrej = np.count_nonzero(mask_rej, axis=0)``. Note that
-    `mask_rej` consumes less memory than `nrej`.
+low, upp : `~numpy.ndarray` or `None`
+    The lower and upper retained-value bounds reported by ``imcombiners``.
 
-low, upp : `~numpy.ndarray` (dtype `dtype`)
-    The lower and upper bounds (``N``-D) to reject pixel values at each position (``(data < low) | (upp
-    < data)`` are removed).
+nit : `~numpy.ndarray` or `None`
+    The number of rejection iterations.
 
-nit : `~numpy.ndarray` (dtype uint8)
-    The number of iterations (``N``-D) used in rejection process. I cannot think of iterations larger
-    than 100, so set the dtype to ``uint8`` to reduce memory and filesize.
-
-rejcode : `~numpy.ndarray` (dtype uint8)
-    The exit code from rejection (``N``-D). See each rejection's docstring.""",
+output_flags : `~numpy.ndarray` or `None`
+    Integer output flags reported by ``imcombiners``.""",
         indent,
     )
 
