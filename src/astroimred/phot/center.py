@@ -45,7 +45,7 @@ def circular_slice(shape, pos, radius, return_offset=False):
 
 # TODO: use "min_fraction" to mask any pixel that has that fraction as inside
 # the circle. If it is 0, then it is the same as the current implementation. If
-# "center", photutils's aperture center-like.
+# "center", astroapers/photutils-style pixel-center selection.
 def circular_bbox_cut(img, pos, radius, return_dists=False):
     """
     Any pixel that has a non-zero fraction within the circle OR touches the
@@ -851,7 +851,7 @@ def find_center_2dg(
         https://iraf.readthedocs.io/en/latest/tasks/noao/digiphot/apphot/centerpars.html
         Default is ``0``.
 
-    sky_annulus : `~photutils.aperture.Aperture` annulus object
+    sky_annulus : astroapers annulus object
         The annulus to estimate the sky. All `_shape_params` of the object will
         be kept, while positions will be updated according to the new
         centroids. The initial input, therefore, does not need to have the

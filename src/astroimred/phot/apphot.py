@@ -41,9 +41,9 @@ def apphot_annulus(
         The aperture and annulus to be used for aperture photometry.
 
         .. note::
-            For multi-position aperture, just use, e.g., ``CircularAperture(positions,
-            r=10)``. For multiple radii, use, e.g., ``[CircularAperture(positions,
-            r=r) for r in radii]``.
+            For a multi-position aperture, use, e.g.,
+            ``aap.CircAp(positions, r=10)``. For multiple radii, use, e.g.,
+            ``[aap.CircAp(positions, r=r) for r in radii]``.
 
     gain : str, float, optional
         The gain of the CCD in electrons per ADU. If str, gain will be
@@ -95,8 +95,6 @@ def apphot_annulus(
 
     bad code
       * 1 (2^0) : weighted masked support ``> npix_mask_ap`` within aperture.
-      * 2 (2^1) : weighted masked support ``> npix_mask_an`` within annulus.
-        (not implemented yet)
 
     Notes
     -----
@@ -175,10 +173,9 @@ def apphot_annulus(
     bads = []
     if _mask is None:
         flag_bad = False
-        _mask = np.zeros_like(_arr).astype(bool)
 
     if mask is not None:
-        _mask |= mask
+        _mask = np.asarray(mask, dtype=bool) if _mask is None else (_mask | mask)
 
     if error is not None:
         logger.info(

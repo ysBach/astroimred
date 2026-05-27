@@ -240,8 +240,8 @@ def annul2values(
     ccd : CCDData, ndarray
         The image which the annuli in `annulus` are to be applied.
 
-    annulus : `~photutils.aperture.Aperture` object
-        The annuli to be used to extract the pixel values.
+    annulus : astroapers annulus object
+        The annulus or multi-position annulus used to extract pixel values.
 
     mask : None or array_like, optional
         A boolean mask with the same shape as `ccd`. The pixels with True
@@ -255,8 +255,9 @@ def annul2values(
 
     Notes
     -----
-    For astroapers aperture inputs, center-selected masks are used so sky
-    samples match photutils' annulus default selection semantics.
+    Center-selected astroapers masks are used so sky samples are unweighted
+    pixel values whose centers fall inside the annulus. ``CCDData.mask`` and
+    the explicit ``mask`` argument are combined before extraction.
 
     Old comments:
     For `~photutils.aperture.CircularAnnulus` inputs, a fast path via
