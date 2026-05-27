@@ -270,7 +270,7 @@ def apphot_annulus(
         return mask
 
     if isinstance(ccd, CCDData):
-        _ccd = ccd.copy()
+        _ccd = ccd
         _arr = _ccd.data
         _mask = _propagate_ccdmask(_ccd, additional_mask=mask)
         if t_exposure is None:

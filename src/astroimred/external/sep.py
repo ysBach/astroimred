@@ -29,6 +29,8 @@ to +0.5. Simple test code::
     # y: [7.66666667]
 """
 
+from functools import lru_cache
+
 import numpy as np
 import pandas as pd
 import sep
@@ -672,6 +674,7 @@ def sep_extract_iterative(
     return obj, segm
 
 
+@lru_cache(maxsize=32)
 def _disk_struct(radius):
     """Boolean disk structuring element of given radius for dilation."""
     r = int(radius)

@@ -121,8 +121,8 @@ def give_stats(
     if percentiles is None:
         percentiles = [1, 99]
     data, hdr = _data_header_from_array_or_path(item, extension=extension)
-    data = np.array(data, copy=True)
     if mask is not None:
+        data = np.array(data, copy=True)
         data[mask] = np.nan
 
     if statsecs is not None:
@@ -166,9 +166,12 @@ def give_stats(
                 2 * N_extrema,
                 result["num"],
             )
-        data_flatten = np.sort(data, axis=None)  # axis=None will do flatten.
-        d_los = data_flatten[:N_extrema]
-        d_his = data_flatten[-1 * N_extrema :]
+        if N_extrema == 0:
+            d_los = np.array([], dtype=data.dtype)
+            d_his = np.array([], dtype=data.dtype)
+        else:
+            d_los = np.sort(np.partition(data, N_extrema - 1)[:N_extrema])
+            d_his = np.sort(np.partition(data, -N_extrema)[-N_extrema:])
         result["ext_lo"] = d_los
         result["ext_hi"] = d_his
 

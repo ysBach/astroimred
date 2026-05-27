@@ -713,7 +713,11 @@ def ccdred(
 
         if path is not None and master is None:
             master = load_ccd(
-                path, ccddata=False
+                path,
+                ccddata=False,
+                use_wcs=False,
+                extension_uncertainty=None,
+                extension_mask=None,
             )  # because it will be forced to CCDData
 
         do = True
@@ -898,7 +902,12 @@ def run_reduc_plan(
         for fpath in df[col].unique():
             if pd.isna(fpath):
                 continue
-            ccds[fpath] = load_ccd(fpath)
+            ccds[fpath] = load_ccd(
+                fpath,
+                use_wcs=False,
+                extension_uncertainty=None,
+                extension_mask=None,
+            )
         return ccds
 
     def _get_path(row, col):
@@ -955,7 +964,16 @@ def run_reduc_plan(
         mask_ccd = (
             mmasks.get(maskpath)
             if preload_cals
-            else (load_ccd(maskpath) if maskpath is not None else None)
+            else (
+                load_ccd(
+                    maskpath,
+                    use_wcs=False,
+                    extension_uncertainty=None,
+                    extension_mask=None,
+                )
+                if maskpath is not None
+                else None
+            )
         )
         ccd = fixpix(
             ccd,
