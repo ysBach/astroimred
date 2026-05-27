@@ -179,6 +179,23 @@ class TestApphotAnnulus:
         # srcsum should equal apsum
         assert_allclose(result["srcsum"][0], result["apsum"][0], rtol=1e-10)
 
+    def test_apphot_does_not_copy_ccddata_input(self, monkeypatch, ccd_uniform):
+        """Read-only photometry should not copy the full CCDData input."""
+        ap = aap.CircAp((50, 50), r=5)
+        called = False
+
+        def fail_copy():
+            nonlocal called
+            called = True
+            raise AssertionError("CCDData.copy should not be called")
+
+        monkeypatch.setattr(ccd_uniform, "copy", fail_copy)
+
+        result = apphot_annulus(ccd_uniform, ap, annulus=None, pandas=False)
+
+        assert not called
+        assert "apsum" in result.colnames
+
 
 # =============================================================================
 # Analytical photometry tests

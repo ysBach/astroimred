@@ -6,7 +6,8 @@ from astropy.io import fits
 from astropy.nddata import CCDData
 
 import astroimred as air
-from astroimred.fitsmgmt import io
+from astroimred._core import system
+from astroimred.fitsmgmt import io, naming
 
 # Strict tolerance for numerical comparisons
 RTOL = 1e-6
@@ -40,6 +41,15 @@ class TestGetSize:
         size = io.get_size(arr)
         # Should be at least 100*100*4 = 40000 bytes
         assert size >= 40000
+
+    def test_get_size_is_core_alias(self):
+        """fitsmgmt.io reuses the canonical core memory-size helper."""
+        assert io.get_size is system.get_size
+        assert air.get_size is system.get_size
+
+    def test_naming_mkdir_is_core_alias(self):
+        """fitsmgmt.naming reuses the canonical core mkdir helper."""
+        assert naming.mkdir is system.mkdir
 
 
 class TestParseDataHeader:
@@ -188,6 +198,20 @@ class TestLoadCcd:
         data, var, mask, flags = result
         assert isinstance(data, np.ndarray)
         assert data.shape == (100, 100)
+
+    def test_load_ccd_rejects_removed_as_ccd_keyword(self, temp_fits_file):
+        """The deprecated `as_ccd` keyword is no longer accepted."""
+        import pytest
+
+        with pytest.raises(TypeError, match="as_ccd"):
+            io.load_ccd(temp_fits_file, as_ccd=False)
+
+    def test_load_ccds_rejects_removed_as_ccd_keyword(self, temp_fits_files):
+        """The deprecated `as_ccd` keyword is no longer accepted for batch loads."""
+        import pytest
+
+        with pytest.raises(TypeError, match="as_ccd"):
+            io.load_ccds(temp_fits_files, as_ccd=False)
 
     def test_load_with_trimsec(self, temp_fits_file):
         """Test loading with trimsec (section trimming)."""

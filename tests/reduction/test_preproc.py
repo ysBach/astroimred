@@ -195,3 +195,34 @@ class TestRunReducPlan:
 
         assert len(reduced) == 1
         np.testing.assert_allclose(reduced[0].data, 45.0, rtol=1e-6)
+
+    def test_preload_calibrations_use_lean_load_options(self, monkeypatch, tmp_path):
+        """Preloaded calibration frames skip WCS/mask/uncertainty by default."""
+        shape = (3, 3)
+        raw_path = tmp_path / "raw.fits"
+        bias_path = tmp_path / "bias.fits"
+        CCDData(np.ones(shape) * 100.0, unit="adu").write(raw_path)
+        CCDData(np.ones(shape) * 10.0, unit="adu").write(bias_path)
+
+        calls = []
+        original_load_ccd = imred.preproc.load_ccd
+
+        def recording_load_ccd(path, *args, **kwargs):
+            calls.append((path, kwargs.copy()))
+            return original_load_ccd(path, *args, **kwargs)
+
+        monkeypatch.setattr(imred.preproc, "load_ccd", recording_load_ccd)
+
+        plan = pd.DataFrame({"file": [raw_path], "BIASFRM": [bias_path]})
+        imred.preproc.run_reduc_plan(
+            plan,
+            preload_cals=True,
+            return_ccd=True,
+            fixpix_kw={"priority": None, "verbose": False},
+            verbose=False,
+        )
+
+        preload_kwargs = dict(calls)[bias_path]
+        assert preload_kwargs["use_wcs"] is False
+        assert preload_kwargs["extension_uncertainty"] is None
+        assert preload_kwargs["extension_mask"] is None

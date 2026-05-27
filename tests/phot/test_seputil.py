@@ -9,6 +9,7 @@ Note: These tests require the sep package, which is a core dependency.
 import numpy as np
 from numpy.testing import assert_allclose
 
+import astroimred.external.sep as sepmod
 from astroimred.external.sep import (
     sep_back,
     sep_extract,
@@ -86,6 +87,16 @@ class TestSepBack:
 
         # Both should give same result for uniform image
         assert_allclose(bkg_small.globalback, bkg_large.globalback, rtol=0.1)
+
+
+def test_disk_struct_cache_reuses_kernel():
+    """Repeated dilation kernels of the same radius are cached."""
+    sepmod._disk_struct.cache_clear()
+
+    first = sepmod._disk_struct(3)
+    second = sepmod._disk_struct(3)
+
+    assert first is second
 
 
 # =============================================================================

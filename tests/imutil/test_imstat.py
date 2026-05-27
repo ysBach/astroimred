@@ -43,6 +43,26 @@ class TestGiveStats:
             result["std"], np.std(arr, ddof=1), rtol=RTOL, atol=ATOL
         )
 
+    def test_stats_extrema_match_sorted_values(self):
+        """Extrema output preserves sorted-low/high semantics."""
+        arr = np.array([5.0, 1.0, 3.0, 2.0, 100.0, -4.0, 7.0])
+
+        result = imstat.give_stats(arr, N_extrema=3)
+
+        np.testing.assert_allclose(result["ext_lo"], [-4.0, 1.0, 2.0])
+        np.testing.assert_allclose(result["ext_hi"], [5.0, 7.0, 100.0])
+
+    def test_stats_mask_does_not_mutate_input(self):
+        """Applying a mask for stats does not alter the caller's array."""
+        arr = np.arange(9.0).reshape(3, 3)
+        original = arr.copy()
+        mask = np.zeros_like(arr, dtype=bool)
+        mask[1, 1] = True
+
+        imstat.give_stats(arr, mask=mask)
+
+        np.testing.assert_array_equal(arr, original)
+
     def test_stats_path_input(self, temp_fits_file):
         """Test statistics on a path-like FITS input."""
         result = imstat.give_stats(temp_fits_file)

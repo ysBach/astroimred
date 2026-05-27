@@ -1,4 +1,5 @@
 import numpy as np
+import pytest
 from astropy.io import fits
 from astropy.nddata import CCDData
 
@@ -69,6 +70,34 @@ class TestSummary:
         assert "OBJECT" in df.columns
         assert "O" not in df.columns
         assert list(df["OBJECT"]) == ["M1"]
+
+    def test_fits_summary_fitsio_header_backend_matches_astropy(self, tmp_path):
+        """The optional fitsio header backend preserves summary values."""
+        pytest.importorskip("fitsio")
+
+        paths = []
+        for i, (obj, filt, exp) in enumerate([("M1", "V", 10.0), ("M2", "B", 20.0)]):
+            p = tmp_path / f"img{i}.fits"
+            hdr = fits.Header()
+            hdr["OBJECT"] = obj
+            hdr["FILTER"] = filt
+            hdr["EXPTIME"] = exp
+            fits.writeto(p, np.zeros((10, 10)), header=hdr)
+            paths.append(p)
+
+        keys = ["OBJECT", "FILTER", "EXPTIME"]
+        expected = table.fits_summary(paths, keywords=keys, header_backend="astropy")
+        actual = table.fits_summary(paths, keywords=keys, header_backend="fitsio")
+
+        assert actual.equals(expected)
+
+    def test_fits_summary_rejects_unknown_header_backend(self, tmp_path):
+        """Header backend selection is explicit, not an arbitrary fits.open kwarg."""
+        p = tmp_path / "img.fits"
+        fits.writeto(p, np.zeros((10, 10)))
+
+        with pytest.raises(ValueError, match="header_backend"):
+            table.fits_summary([p], keywords=["NAXIS"], header_backend="bogus")
 
     def test_fits_summary_glob_fname_name(self, tmp_path):
         """Glob inputs support the documented fname_option='name' path."""
