@@ -7,6 +7,7 @@ from astro_ndslice import slice_from_string
 from astropy.io import fits
 from astropy.nddata import CCDData
 
+from .._core.system import mkdir
 from .._core.types import StrPathLike
 from ..logging import logger
 from .header import key_mapper, key_remover
@@ -16,12 +17,6 @@ __all__ = [
     "fits_newpath",
     "fitsrenamer",
 ]
-
-
-def mkdir(fpath: StrPathLike, mode: int = 0o777, exist_ok: bool = True) -> None:
-    """Convenience function for `~pathlib.Path`.mkdir()"""
-    fpath = Path(fpath)
-    Path.mkdir(fpath, mode=mode, exist_ok=exist_ok)
 
 
 def fits_newpath(

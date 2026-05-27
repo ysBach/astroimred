@@ -1,7 +1,6 @@
 """FITS image loading helpers."""
 
 import glob
-import sys
 from collections.abc import Sequence
 from pathlib import Path, PosixPath, WindowsPath
 
@@ -14,6 +13,7 @@ from astropy.nddata import CCDData
 from astropy.table import Table
 from astropy.wcs import WCS
 
+from .._core.system import get_size
 from .._core.types import HDUExt, HDULike, HDULike_types, StrPathLike
 from ..logging import logger
 
@@ -44,37 +44,6 @@ __all__ = [
     "load_ccd",
     "load_ccds",
 ]
-
-
-def get_size(obj: object, seen: set | None = None) -> int:
-    """Recursively estimate an object's memory size in bytes.
-
-    Based on the recursive recipe from
-    https://goshippo.com/blog/measure-real-size-any-python-object/.
-    """
-    size = sys.getsizeof(obj)
-    if seen is None:
-        seen = set()
-    obj_id = id(obj)
-    if obj_id in seen:
-        return 0
-    # Important mark as seen *before* entering recursion to gracefully handle
-    # self-referential objects
-    seen.add(obj_id)
-    if isinstance(obj, dict):
-        objv = obj.values()
-        objk = obj.keys()
-        for kv in [objk, objv]:
-            for v in kv:
-                if not (isinstance(v, np.ndarray) and v.ndim == 0):
-                    size += get_size(v, seen)
-        # size += sum([get_size(v, seen) for v in obj.values()])
-        # size += sum([get_size(k, seen) for k in obj.keys()])
-    elif hasattr(obj, "__dict__"):
-        size += get_size(obj.__dict__, seen)
-    elif hasattr(obj, "__iter__") and not isinstance(obj, (str, bytes, bytearray)):
-        size += sum([get_size(i, seen) for i in obj])
-    return size
 
 
 # ************************************************************************************ #
@@ -167,11 +136,18 @@ def _parse_data_header(
             # 2020-11-09 16:06:41 (KST: GMT+09:00) ysBach
             try:
                 if parse_header:
-                    hdu = fits.open(Path(ccdlike), memmap=False)[extension]
-                    # No need to copy because they've been read (loaded) for
-                    # the first time here.
-                    data = hdu.data if parse_data else None
-                    hdr = hdu.header if parse_header else None
+                    with fits.open(Path(ccdlike), memmap=False) as hdul:
+                        hdu = hdul[extension]
+                        data = (
+                            (
+                                hdu.data.copy()
+                                if copy and hdu.data is not None
+                                else hdu.data
+                            )
+                            if parse_data
+                            else None
+                        )
+                        hdr = hdu.header.copy() if copy else hdu.header
                 else:
                     if isinstance(extension, tuple):
                         if HAS_FITSIO:
@@ -686,7 +662,6 @@ def load_ccd(
     full: bool = False,
     key_uncertainty_type: str = "UTYPE",
     memmap: bool = False,
-    as_ccd: bool = True,  # DEPRECATED
     **kwd,
 ) -> CCDData | np.ndarray | tuple[object, ...]:
     """Load CCD-like image data from a FITS file.
@@ -712,10 +687,6 @@ def load_ccd(
         is `False`, **all the arguments below are ignored**, except for the
         keyword arguments that will be passed to `fitsio.read`, and an `~numpy.ndarray`
         will be returned without astropy unit.
-
-    as_ccd : `bool`, optional.
-        Deprecated. (identical to `ccddata`)
-        Default: `True`.
 
     use_wcs : `bool`, optional.
         Whether to load `~astropy.wcs.WCS` by `fits.getheader`, **not** by
@@ -780,9 +751,12 @@ def load_ccd(
     except TypeError as err:
         raise TypeError(f"You must provide Path-like, not {type(path)}.") from err
 
+    if "as_ccd" in kwd:
+        raise TypeError("`as_ccd` was removed. Use `ccddata` instead.")
+
     extension = _parse_extension(extension)
 
-    if HAS_FITSIO and not (ccddata and as_ccd):
+    if HAS_FITSIO and not ccddata:
         return _load_ccd_fitsio(
             path=path,
             extension=extension,
@@ -816,7 +790,7 @@ def load_ccd(
     ccd.uncertainty = None if e_u is None else ccd.uncertainty
     ccd.mask = None if e_m is None else ccd.mask
 
-    if ccddata and as_ccd:
+    if ccddata:
         if full:  # Just for API consistency
             return ccd, ccd.uncertainty, ccd.mask, ccd.flags
         return ccd
@@ -835,7 +809,6 @@ def load_ccds(
     extension: HDUExt = None,
     trimsec: str | None = None,
     ccddata: bool = True,
-    as_ccd: bool = True,
     use_wcs: bool = True,
     unit: u.Unit | None = None,
     extension_uncertainty: str | None = "UNCERT",
@@ -873,7 +846,6 @@ def load_ccds(
             extension=extension,
             trimsec=trimsec,
             ccddata=ccddata,
-            as_ccd=as_ccd,
             use_wcs=use_wcs,
             unit=unit,
             extension_uncertainty=extension_uncertainty,
