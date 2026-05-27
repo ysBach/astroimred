@@ -7,14 +7,14 @@ from astropy.visualization import (
     ZScaleInterval,
 )
 
-from astroimred._core.astropy_helpers import astropy_stretch, parse_interval
+from astroimred._core.astropy_helpers import parse_interval, parse_stretch
 from astroimred.viz import imshow_norm
 from astroimred.viz.ticks import format_offset_label
 
 
-def test_astropy_stretch_accepts_bare_and_class_names():
-    assert isinstance(astropy_stretch("asinh", asinh_a=0.2), AsinhStretch)
-    assert isinstance(astropy_stretch("SquaredStretch"), SquaredStretch)
+def test_parse_stretch_accepts_bare_and_class_names():
+    assert isinstance(parse_stretch("asinh", asinh_a=0.2), AsinhStretch)
+    assert isinstance(parse_stretch("SquaredStretch"), SquaredStretch)
 
 
 def test_parse_interval_shortcuts():

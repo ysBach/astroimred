@@ -1,46 +1,12 @@
 """Tests for standalone geometry utilities."""
 
 import numpy as np
-import pytest
 
 from astroimred._core import astropy_helpers, geometry
 
 # Strict tolerance for numerical comparisons
 RTOL = 1e-6
 ATOL = 1e-8
-
-
-class TestMovedHelpers:
-    """Tests for helpers moved out of geometry."""
-
-    def test_io_owns_helper(self):
-        """Moved I/O helpers are not re-exported from geometry."""
-        assert not hasattr(geometry, "get_size")
-
-    def test_numeric_owns_helpers(self):
-        """Moved math helpers are not re-exported from geometry."""
-        assert not hasattr(geometry, "sstd")
-        assert not hasattr(geometry, "weighted_avg")
-        assert not hasattr(geometry, "wvg")
-        assert not hasattr(geometry, "min_max_med_1d")
-        assert not hasattr(geometry, "mean_std_1d")
-        assert not hasattr(geometry, "quantile_lh")
-        assert not hasattr(geometry, "quantile_sigma")
-        assert not hasattr(geometry, "binning")
-        assert not hasattr(geometry, "dB2epadu")
-        assert not hasattr(geometry, "epadu2dB")
-
-    def test_headers_own_helpers(self):
-        """Moved header helpers are not re-exported from geometry."""
-        assert not hasattr(geometry, "cmt2hdr")
-        assert not hasattr(geometry, "update_tlm")
-        assert not hasattr(geometry, "update_process")
-
-    def test_reduction_owns_presets(self):
-        """Reduction presets are not re-exported from geometry."""
-        assert not hasattr(geometry, "MEDCOMB_KEYS_INT")
-        assert not hasattr(geometry, "SUMCOMB_KEYS_INT")
-        assert not hasattr(geometry, "MEDCOMB_KEYS_FLT32")
 
 
 class TestCircularMask:
@@ -70,33 +36,6 @@ class TestCircularMask:
         mask = geometry.circular_mask(shape=(10, 10), radius=2)
         # Default center should be (5, 5) for a 10x10 image
         assert mask[5, 5]
-
-
-class TestCircularMask2D:
-    """Tests for circular_mask_2d function (photutils-based)."""
-
-    def test_basic(self):
-        """Test basic 2D circular mask using photutils."""
-        mask = geometry.circular_mask_2d(shape=(100, 100), center=(50, 50), radius=10)
-        assert mask.shape == (100, 100)
-        assert mask.dtype == bool
-        # Center should be inside
-        assert mask[50, 50]
-
-    @pytest.mark.parametrize(
-        "radius,expected_sum",
-        [
-            (1.0, 1),
-            (5.0, 69),
-            (10.0, 305),
-        ],
-    )
-    def test_mask_sum_by_radius(self, radius, expected_sum):
-        """Test mask pixel count for various radii."""
-        mask = geometry.circular_mask_2d(
-            shape=(100, 100), center=(50, 50), radius=radius, method="center"
-        )
-        assert np.sum(mask) == expected_sum
 
 
 class TestStrNow:

@@ -1,5 +1,6 @@
 import numpy as np
 from astropy.io import fits
+from astropy.nddata import CCDData
 
 from astroimred.fitsmgmt import table
 
@@ -24,7 +25,7 @@ class TestSummary:
             paths.append(str(p))
 
         # Run fits_summary
-        df = table.fits_summary(paths, keywords=keys, verbose=False)
+        df = table.fits_summary(paths, keywords=keys)
 
         assert len(df) == 3
         assert "file" in df.columns
@@ -51,8 +52,59 @@ class TestSummary:
             [p],
             keywords=["OBJECT"],
             output=output,
-            verbose=False,
         )
 
         assert list(df["OBJECT"]) == ["M1"]
         assert calls == [(output, False, ["file", "filesize", "OBJECT"])]
+
+    def test_fits_summary_string_keyword(self, tmp_path):
+        """A single keyword string is treated as one column name."""
+        p = tmp_path / "img.fits"
+        hdr = fits.Header()
+        hdr["OBJECT"] = "M1"
+        fits.writeto(p, np.zeros((10, 10)), header=hdr)
+
+        df = table.fits_summary([p], keywords="OBJECT")
+
+        assert "OBJECT" in df.columns
+        assert "O" not in df.columns
+        assert list(df["OBJECT"]) == ["M1"]
+
+    def test_fits_summary_glob_fname_name(self, tmp_path):
+        """Glob inputs support the documented fname_option='name' path."""
+        for name in ["b.fits", "a.fits"]:
+            hdr = fits.Header()
+            hdr["OBJECT"] = name
+            fits.writeto(tmp_path / name, np.zeros((10, 10)), header=hdr)
+
+        df = table.fits_summary(
+            str(tmp_path / "*.fits"),
+            keywords=["OBJECT"],
+            fname_option="name",
+        )
+
+        assert list(df["file"]) == ["a.fits", "b.fits"]
+
+    def test_fits_summary_hdu_inputs(self):
+        """HDU-like inputs are summarized without being treated as paths."""
+        hdr = fits.Header()
+        hdr["OBJECT"] = "M1"
+        hdu = fits.PrimaryHDU(data=np.zeros((10, 10)), header=hdr)
+
+        df = table.fits_summary([hdu], keywords=["OBJECT"])
+
+        assert list(df["file"]) == ["PrimaryHDU in fitslist[0]"]
+        assert df.iloc[0]["filesize"] is None
+        assert list(df["OBJECT"]) == ["M1"]
+
+    def test_fits_summary_ccddata_inputs(self):
+        """CCDData inputs keep their synthetic names and no filesystem size."""
+        hdr = fits.Header()
+        hdr["OBJECT"] = "M1"
+        ccd = CCDData(np.zeros((10, 10)), unit="adu", header=hdr)
+
+        df = table.fits_summary([ccd], keywords=["OBJECT"])
+
+        assert list(df["file"]) == ["CCDData in fitslist[0]"]
+        assert df.iloc[0]["filesize"] is None
+        assert list(df["OBJECT"]) == ["M1"]

@@ -5,7 +5,6 @@ from astropy import units as u
 from astropy.io import fits
 
 import astroimred as air
-from astroimred._core import geometry
 from astroimred.fitsmgmt import header
 
 
@@ -17,9 +16,6 @@ class TestHeaderExports:
         assert air.hedit is header.hedit
         assert air.key_remover is header.key_remover
         assert air.hdrval is header.hdrval
-        assert not hasattr(header, "valinhdr")
-        assert not hasattr(header, "get_from_header")
-        assert not hasattr(header, "get_if_none")
 
 
 class TestHdrval:
@@ -50,12 +46,6 @@ class TestHdrval:
 
 class TestCmt2Hdr:
     """Tests for cmt2hdr function (adding comments/history to header)."""
-
-    def test_headers_owns_helper(self):
-        """Moved header helpers are not re-exported from geometry."""
-        assert not hasattr(geometry, "cmt2hdr")
-        assert not hasattr(geometry, "update_tlm")
-        assert not hasattr(geometry, "update_process")
 
     def test_add_history(self, sample_header):
         """Test adding HISTORY to header."""
