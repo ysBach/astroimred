@@ -1,6 +1,7 @@
 """WCS helper utilities."""
 
 import re
+from functools import lru_cache
 
 import erfa
 import numpy as np
@@ -15,6 +16,12 @@ from .._core.types import HDUExt, HDULike, StrPathLike
 from ..logging import logger
 
 __all__ = ["wcs_crota", "center_radec", "fov_radius", "wcsremove", "pixel_scale"]
+
+
+@lru_cache(maxsize=32)
+def _compile_any_match(patterns: tuple[str, ...]) -> re.Pattern:
+    """Compile multiple start-anchored regex fragments into one matcher."""
+    return re.compile("|".join(f"(?:{pattern})" for pattern in patterns))
 
 
 def wcs_crota(wcs: WCS | Wcsprm, degree: bool = True) -> float:
@@ -370,9 +377,11 @@ def wcsremove(
 
     if additional_keys is not None:
         re2remove += [k.upper() for k in listify(additional_keys)]
+    remove_re = _compile_any_match(tuple(re2remove))
 
     # If following str is in comment, suggest it if verbose
     candidate_re = ["wcs", "axis", "axes", "coord", "distortion", "reference"]
+    candidate_re = _compile_any_match(tuple(candidate_re))
     candidate_key = []
 
     removed_keys = []  # Collect removed keys for logging
@@ -391,18 +400,11 @@ def wcsremove(
 
     for k in list(hdr.keys()):
         com = hdr.comments[k]
-        deleted = False
-        for re_i in re2remove:
-            if re.match(re_i, k) is not None and not deleted:
-                hdr.remove(k)
-                deleted = True
-                removed_keys.append(k)
-                continue
-        if not deleted and com:  # do only if com != ""
-            for re_cand in candidate_re:
-                if re.match(re_cand, com):
-                    candidate_key.append(k)
-                    break  # break here for minor performance boost
+        if remove_re.match(k) is not None:
+            hdr.remove(k)
+            removed_keys.append(k)
+        elif com and candidate_re.match(com):  # do only if com != ""
+            candidate_key.append(k)
     if verbose:
         if removed_keys:
             logger.info("%s", " ".join(removed_keys))
