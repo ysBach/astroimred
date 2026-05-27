@@ -1,3 +1,6 @@
+from dataclasses import dataclass
+from typing import Any
+
 import numpy as np
 import pandas as pd
 from astropy import units as u
@@ -5,10 +8,136 @@ from astropy.nddata import CCDData
 from astropy.table import QTable
 
 from ..logging import logger
-from ._aper_backend import normalize_apertures, photometer
 from .background import sky_fit
 
 __all__ = ["apphot_annulus"]
+
+
+@dataclass(frozen=True)
+class PhotometryResult:
+    """Aperture photometry arrays."""
+
+    positions: np.ndarray
+    apsum: np.ndarray
+    apsum_err: np.ndarray | None
+    apsum_npix: np.ndarray
+    nbadpix: np.ndarray
+
+
+def _normalize_apertures(apertures: Any) -> list[Any]:
+    """Return one or more astroapers aperture objects."""
+    if isinstance(apertures, np.ndarray):
+        return list(apertures.ravel())
+    if isinstance(apertures, (list, tuple)):
+        return list(np.asarray(apertures, dtype=object).ravel())
+    return [apertures]
+
+
+def _normalize_positions(aperture: Any) -> np.ndarray:
+    """Return aperture positions as an ``(N, 2)`` float array."""
+    positions = np.asarray(aperture.positions, dtype=np.float64)
+    return positions.reshape(1, 2) if positions.ndim == 1 else positions
+
+
+def _aperture_apsum(
+    aperture: Any,
+    data: np.ndarray,
+    *,
+    mask: np.ndarray | None,
+    method: str,
+    return_npix: bool = True,
+):
+    if method == "exact":
+        return aperture.apsum_exact(data, mask=mask, return_npix=return_npix)
+    if method == "center":
+        return aperture.apsum_center(data, mask=mask, return_npix=return_npix)
+    raise ValueError("method must be 'exact' or 'center'")
+
+
+def _aperture_npix(
+    aperture: Any,
+    shape: tuple[int, int],
+    *,
+    method: str,
+    mask: np.ndarray | None = None,
+):
+    if method == "exact":
+        return aperture.npix_exact(shape, mask=mask)
+    if method == "center":
+        return aperture.npix_center(shape, mask=mask)
+    raise ValueError("method must be 'exact' or 'center'")
+
+
+def photometer(
+    data: np.ndarray,
+    apertures: Any,
+    *,
+    error: np.ndarray | None = None,
+    mask: np.ndarray | None = None,
+    method: str = "exact",
+) -> PhotometryResult:
+    """Measure aperture sums, errors, used aperture support, and masked support."""
+    arr = np.asarray(data)
+    if arr.ndim != 2:
+        raise ValueError("data must be a 2-D array.")
+    err = None if error is None else np.asarray(error)
+    if err is not None and err.shape != arr.shape:
+        raise ValueError("error must have the same shape as data.")
+    bad = None if mask is None else np.asarray(mask, dtype=bool)
+    if bad is not None and bad.shape != arr.shape:
+        raise ValueError("mask must have the same shape as data.")
+
+    positions: list[np.ndarray] = []
+    sums: list[float] = []
+    errs: list[float] = []
+    apsum_npixs: list[float] = []
+    nbadpix: list[float] = []
+
+    for aperture in _normalize_apertures(apertures):
+        ap_positions = _normalize_positions(aperture)
+        ap_sums, ap_npixs = _aperture_apsum(
+            aperture,
+            arr,
+            mask=bad,
+            method=method,
+            return_npix=True,
+        )
+        ap_sums = np.asarray(ap_sums, dtype=np.float64).reshape(-1)
+        ap_npixs = np.asarray(ap_npixs, dtype=np.float64).reshape(-1)
+        if len(ap_positions) != len(ap_sums):
+            raise ValueError("aperture positions and sums have inconsistent lengths.")
+
+        positions.extend(ap_positions)
+        sums.extend(ap_sums)
+        apsum_npixs.extend(ap_npixs)
+        if bad is None:
+            nbadpix.extend(np.zeros_like(ap_npixs))
+        else:
+            total_npix = _aperture_npix(aperture, arr.shape, method=method)
+            total_npix = np.asarray(total_npix, dtype=np.float64).reshape(-1)
+            nbadpix.extend(_nonnegative_nbadpix(total_npix - ap_npixs))
+        if err is not None:
+            err_sums = _aperture_apsum(
+                aperture,
+                np.square(err),
+                mask=bad,
+                method=method,
+                return_npix=False,
+            )
+            errs.extend(np.sqrt(np.asarray(err_sums, dtype=np.float64).reshape(-1)))
+
+    return PhotometryResult(
+        positions=np.asarray(positions, dtype=np.float64),
+        apsum=np.asarray(sums, dtype=np.float64),
+        apsum_err=None if err is None else np.asarray(errs, dtype=np.float64),
+        apsum_npix=np.asarray(apsum_npixs, dtype=np.float64),
+        nbadpix=np.asarray(nbadpix, dtype=np.float64),
+    )
+
+
+def _nonnegative_nbadpix(values: np.ndarray) -> np.ndarray:
+    tiny = 1.0e-12
+    return np.where((values < 0.0) & (np.abs(values) <= tiny), 0.0, values)
 
 
 # TODO: Put centroiding into this apphot_annulus ?
@@ -166,7 +295,7 @@ def apphot_annulus(
         unknown = ", ".join(sorted(kwargs))
         raise TypeError(f"Unsupported apphot_annulus keyword(s): {unknown}")
 
-    apertures = normalize_apertures(aperture)
+    apertures = _normalize_apertures(aperture)
 
     flag_bad = True
     nbads = []

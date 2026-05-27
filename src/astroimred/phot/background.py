@@ -7,9 +7,7 @@ from astropy.table import Table
 
 from astroimred._core.astropy_helpers import sigma_clipper
 
-from ._aper_backend import center_values
-
-__all__ = ["quick_sky_circ", "sky_fit", "annul2values", "mmm_dao"]
+__all__ = ["quick_sky_circ", "sky_fit", "mmm_dao"]
 
 
 def quick_sky_circ(
@@ -153,7 +151,23 @@ def sky_fit(
 
         skys = [arr[~base_mask].ravel() if base_mask is not None else arr.ravel()]
     else:
-        skys = annul2values(ccd, annulus, mask=mask)
+        if isinstance(ccd, CCDData):
+            arr = np.asarray(ccd.data)
+            ccd_mask = ccd.mask
+            if ccd_mask is not None:
+                base_mask = np.asarray(ccd_mask, dtype=bool)
+                if mask is not None:
+                    base_mask = base_mask | np.asarray(mask, dtype=bool)
+            else:
+                base_mask = None if mask is None else np.asarray(mask, dtype=bool)
+        else:
+            arr = np.asarray(ccd)
+            base_mask = None if mask is None else np.asarray(mask, dtype=bool)
+        flat_sky, offsets = annulus.sampled_values(arr, mask=base_mask, flat=True)
+        skys = [
+            flat_sky[start:stop]
+            for start, stop in zip(offsets[:-1], offsets[1:], strict=True)
+        ]
 
     if sky_clipper is None:
 
@@ -226,67 +240,6 @@ def _sky_fit(
     nrej = sky.size - nsky
 
     return msky, std, nsky, nrej
-
-
-def annul2values(
-    ccd: CCDData | np.ndarray,
-    annulus,
-    mask: np.ndarray | None = None,
-) -> list[np.ndarray]:
-    """Extracts the pixel values from the image with annuli.
-
-    Parameters
-    ----------
-    ccd : CCDData, ndarray
-        The image which the annuli in `annulus` are to be applied.
-
-    annulus : astroapers annulus object
-        The annulus or multi-position annulus used to extract pixel values.
-
-    mask : None or array_like, optional
-        A boolean mask with the same shape as `ccd`. The pixels with True
-        values will be masked.
-
-    Returns
-    -------
-    values: list of ndarray
-        The list of pixel values. Length is the same as the number of annuli in
-        `annulus`.
-
-    Notes
-    -----
-    Center-selected astroapers masks are used so sky samples are unweighted
-    pixel values whose centers fall inside the annulus. ``CCDData.mask`` and
-    the explicit ``mask`` argument are combined before extraction.
-
-    Old comments:
-    For `~photutils.aperture.CircularAnnulus` inputs, a fast path via
-    `~astroimred.phot.aputil.fast_circ_anmask` is used, bypassing photutils
-    ``ApertureMask`` object construction. Benchmarked on a 512×512 image:
-
-    - Single annulus extraction: ~1.4x faster (~9.4 µs → ~6.8 µs)
-    - 50-object bulk extraction: ~1.5x faster (~0.32 ms → ~0.21 ms)
-
-    The dominant cost in `sky_fit` is `sigma_clipper` (~33 µs/call for a
-    typical annulus), so the overall `sky_fit` speedup is modest unless
-    called in tight loops without sky fitting.
-    """
-    if isinstance(ccd, CCDData):
-        arr = np.asarray(ccd.data)
-        _ccd_mask = ccd.mask
-        if _ccd_mask is not None:
-            base_mask = np.asarray(_ccd_mask, dtype=bool)
-            if mask is not None:
-                base_mask = base_mask | np.asarray(mask, dtype=bool)
-        else:
-            base_mask = None if mask is None else np.asarray(mask, dtype=bool)
-    else:  # ndarray
-        arr = np.asarray(ccd)
-        base_mask = None if mask is None else np.asarray(mask, dtype=bool)
-
-    if not hasattr(annulus, "get_apmask"):
-        raise TypeError("annulus must be an astroapers aperture or annulus object.")
-    return center_values(arr, annulus, mask=base_mask)
 
 
 def mmm_dao(

@@ -68,6 +68,28 @@ class TestSstd:
         # The function returns empty array when ZeroDivisionError
         assert result.size == 0 or np.isinf(result) or np.isnan(result)
 
+    def test_sstd_flat_nan_uses_lazy_numba_path_when_available(self, monkeypatch):
+        """Flattened NaN-aware sstd keeps its optional lazy Numba fast path."""
+        import astroimred._core.numeric as numeric
+
+        called = {}
+
+        def fake_get_kernel():
+            called["used"] = True
+
+            def kernel(arr, ddof):
+                return arr.size, 123.0 + ddof
+
+            return kernel
+
+        monkeypatch.setattr(numeric, "_numba_available", True)
+        monkeypatch.setattr(numeric, "_get_sstd_nan_1d_nb", fake_get_kernel)
+
+        result = numeric.sstd(np.array([1.0, 2.0, 3.0]), ddof=1, nan=True)
+
+        assert result == 124.0
+        assert called["used"] is True
+
 
 class TestSigmaClipper:
     """Tests for sigma_clipper function."""

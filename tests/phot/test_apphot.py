@@ -198,7 +198,7 @@ class TestPhotometryAnalytical:
         data = np.full((100, 100), value)
         ap = aap.CircAp((50, 50), r=radius)
 
-        apsum = ap.apsum(data)[0]
+        apsum = ap.apsum_exact(data)[0]
 
         expected = value * np.pi * radius**2
         assert_allclose(apsum, expected, rtol=0.01)
@@ -286,7 +286,7 @@ class TestApphotErrorHandling:
         an = aap.CircAn((50, 50), r_in=10, r_out=15)
 
         result = apphot_annulus(ccd_uniform, ap, an, mask=mask, pandas=False)
-        _, total_npix = ap.apsum(ccd_uniform.data)
+        _, total_npix = ap.apsum_exact(ccd_uniform.data)
 
         # Should still compute result
         assert np.isfinite(result["srcsum"][0])
@@ -296,7 +296,7 @@ class TestApphotErrorHandling:
     def test_apphot_nbadpix_uses_exact_fractional_weights(self):
         data = np.ones((30, 30), dtype=float)
         ap = aap.CircAp((12.2, 13.3), r=5)
-        weights = ap.get_apmask("exact").to_image(data.shape)
+        weights = ap.bboxes()[0].to_image(ap.weights_exact()[0], data.shape)
         fractional = np.argwhere((weights > 0) & (weights < 1))
         y, x = fractional[0]
         mask = np.zeros_like(data, dtype=bool)
@@ -304,7 +304,7 @@ class TestApphotErrorHandling:
         ccd = CCDData(data, unit="adu", header={"GAIN": 1, "RDNOISE": 0}, mask=mask)
 
         result = apphot_annulus(ccd, ap, annulus=None, pandas=False)
-        _, total_npix = ap.apsum(data)
+        _, total_npix = ap.apsum_exact(data)
 
         assert_allclose(result["nbadpix"][0], weights[y, x])
         assert_allclose(result["apsum_npix"][0], total_npix - weights[y, x])
@@ -316,7 +316,7 @@ class TestApphotErrorHandling:
         ap = aap.CircAp((-1.5, 10.0), r=6)
 
         result = apphot_annulus(ccd, ap, annulus=None, pandas=False)
-        expected_apsum, expected_npix = ap.apsum(data)
+        expected_apsum, expected_npix = ap.apsum_exact(data)
 
         assert_allclose(result["apsum"][0], expected_apsum)
         assert_allclose(result["apsum_npix"][0], expected_npix)

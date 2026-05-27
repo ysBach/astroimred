@@ -8,7 +8,6 @@ import astroapers as aap
 import numpy as np
 from numpy.testing import assert_allclose
 
-from astroimred.phot.background import annul2values
 from astroimred.phot.radprof import (
     bivt_r,
     fwhm_r,
@@ -353,8 +352,7 @@ class TestRadialProfileAnalytical:
         """
         an = aap.CircAn((50, 50), r_in=5, r_out=7)
 
-        # Using annul2values to count pixels
-        vals = annul2values(uniform_100x100, an)
+        vals = an.sampled_values(uniform_100x100)
 
         # Should have approximately pi * (49 - 25) = 75.4 pixels
         # (method='center' gives integer pixel count)

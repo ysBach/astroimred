@@ -1,4 +1,4 @@
-"""Aperture helpers backed by astroapers."""
+"""Astropy cutout helpers for astroapers apertures."""
 
 from __future__ import annotations
 
@@ -8,14 +8,22 @@ import astroapers as aap
 import numpy as np
 from astropy.nddata import CCDData, Cutout2D
 
-from ._aper_backend import as_radians
-
 __all__ = [
     "circ_ap_an",
     "cutout_from_ap",
     "ellip_ap_an",
     "pill_ap_an",
+    "rect_ap_an",
 ]
+
+
+def _as_radians(theta: Any) -> float:
+    """Return ``theta`` as a float in radians."""
+    if hasattr(theta, "to_value"):
+        from astropy import units as u
+
+        return float(theta.to_value(u.rad))
+    return float(theta)
 
 
 def cutout_from_ap(
@@ -24,16 +32,39 @@ def cutout_from_ap(
     method: str = "bbox",
     fill_value: float = np.nan,
 ) -> Cutout2D | list[Cutout2D]:
-    """Return `~astropy.nddata.Cutout2D` objects from aperture bounding boxes."""
+    """Return `~astropy.nddata.Cutout2D` objects from aperture bounding boxes.
+
+    Parameters
+    ----------
+    ap : `~astroapers.Aperture`
+        The aperture object.
+    ccd : `~astropy.nddata.CCDData` or `numpy.ndarray`
+        The CCD data.
+    method : str, optional
+        The method to use for cutout generation. Default is "bbox".
+    fill_value : float, optional
+        The value to use for filling the cutout. Default is `numpy.nan`.
+
+    Returns
+    -------
+    `~astropy.nddata.Cutout2D` or list of `~astropy.nddata.Cutout2D`
+        The cutout objects.
+    """
     data = ccd.data if isinstance(ccd, CCDData) else np.asarray(ccd)
     positions = np.asarray(ap.positions, dtype=np.float64).reshape(-1, 2)
-    masks = ap.get_apmask(method="center" if method == "bbox" else method)
-    masks = masks if isinstance(masks, list) else [masks]
+    if method not in {"bbox", "center", "exact"}:
+        raise ValueError(f"Unsupported aperture method: {method!r}")
+    boxes = ap.bboxes()
+    cutout_data = None
+    if method == "center":
+        cutout_data = ap.sampled_cutout(data, fill_value=fill_value)
+    elif method == "exact":
+        cutout_data = ap.weighted_cutout(data, fill_value=fill_value)
     cuts = []
-    for pos, apmask in zip(positions, masks, strict=True):
-        cut = Cutout2D(data, position=pos, size=apmask.weights.shape)
+    for idx, (pos, box) in enumerate(zip(positions, boxes, strict=True)):
+        cut = Cutout2D(data, position=pos, size=box.shape)
         if method != "bbox":
-            cut.data = apmask.weighted_cutout(data, fill_value=fill_value)
+            cut.data = cutout_data[idx]
         cuts.append(cut)
     return cuts[0] if len(cuts) == 1 else cuts
 
@@ -59,7 +90,7 @@ def ellip_ap_an(
     theta: float = 0.0,
 ) -> tuple[aap.EllipAp, aap.EllipAn]:
     """Return elliptical aperture and annulus objects."""
-    theta_rad = as_radians(theta)
+    theta_rad = _as_radians(theta)
     ap = aap.EllipAp(positions, a=a_ap, b=b_ap, theta=theta_rad)
     an = aap.EllipAn(
         positions,
@@ -67,6 +98,30 @@ def ellip_ap_an(
         b_in=b_in,
         a_out=a_out,
         b_out=b_out,
+        theta_in=theta_rad,
+    )
+    return ap, an
+
+
+def rect_ap_an(
+    positions,
+    w_ap: float,
+    h_ap: float,
+    w_in: float,
+    h_in: float,
+    w_out: float,
+    h_out: float,
+    theta: float = 0.0,
+) -> tuple[aap.RectAp, aap.RectAn]:
+    """Return rectangular aperture and annulus objects."""
+    theta_rad = _as_radians(theta)
+    ap = aap.RectAp(positions, w=w_ap, h=h_ap, theta=theta_rad)
+    an = aap.RectAn(
+        positions,
+        w_in=w_in,
+        h_in=h_in,
+        w_out=w_out,
+        h_out=h_out,
         theta_in=theta_rad,
     )
     return ap, an
@@ -86,7 +141,7 @@ def pill_ap_an(
     theta: float = 0.0,
 ) -> tuple[aap.PillAp, aap.PillAn]:
     """Return pill aperture and annulus objects."""
-    theta_rad = as_radians(theta)
+    theta_rad = _as_radians(theta)
 
     ap = aap.PillAp(positions, w=w_ap, a=a_ap, b=b_ap, theta=theta_rad)
     an = aap.PillAn(
