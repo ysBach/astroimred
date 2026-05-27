@@ -19,6 +19,13 @@ from ..logging import logger
 from .header import chk_keyval
 from .io import _parse_extension, inputs2list, load_ccd
 
+try:
+    import fitsio
+
+    HAS_FITSIO = True
+except ImportError:
+    HAS_FITSIO = False
+
 __all__ = [
     "fits_summary",
     "df_selector",
@@ -58,6 +65,7 @@ def fits_summary(
     querystr: str | None = None,
     negate_fullmatch: bool = False,
     nonunique_keys: bool = False,
+    header_backend: str = "auto",
     **kwargs: object,
 ) -> pd.DataFrame | None:
     """Extract summary rows from FITS headers.
@@ -141,6 +149,13 @@ def fits_summary(
         will not be removed.
         Default is `False`.
 
+    header_backend : {"auto", "astropy", "fitsio"}, optional
+        Header reader used for path-like FITS inputs when it is safe to avoid
+        opening full HDULists. ``"auto"`` uses ``fitsio`` when installed and
+        falls back to Astropy otherwise. ``"fitsio"`` raises if ``fitsio`` is not
+        installed.
+        Default: ``"auto"``.
+
     **kwargs :
         The keyword arguments to be passed to `~astropy.io.fits.open`.
 
@@ -206,6 +221,7 @@ def fits_summary(
             querystr=querystr,
             negate_fullmatch=negate_fullmatch,
             nonunique_keys=False,
+            header_backend=header_backend,
             **kwargs,
         )
         logger.info("Unique keys that will be removed:")
@@ -231,7 +247,36 @@ def fits_summary(
         logger.info("No FITS file found.")
         return None
 
-    def _get_fname_fsize_hdr(item, idx, extension):
+    if header_backend not in {"auto", "astropy", "fitsio"}:
+        raise ValueError(
+            "header_backend must be one of 'auto', 'astropy', or 'fitsio'."
+        )
+    if header_backend == "fitsio" and not HAS_FITSIO:
+        raise ImportError("header_backend='fitsio' requires the fitsio package.")
+
+    def _read_path_header(item_path, extension, force_astropy=False):
+        fast_header = (
+            not force_astropy
+            and not verify_fix
+            and not kwargs
+            and keywords is not None
+            and keywords != "*"
+        )
+        if fast_header:
+            if header_backend == "fitsio" or (header_backend == "auto" and HAS_FITSIO):
+                if isinstance(extension, tuple):
+                    return fitsio.read_header(
+                        item_path, ext=extension[0], extver=extension[1]
+                    )
+                return fitsio.read_header(item_path, ext=extension)
+            return fits.getheader(item_path, extension)
+
+        with fits.open(item_path, **kwargs) as hdul:
+            if verify_fix:
+                hdul.verify("fix")
+            return hdul[extension].header.copy()
+
+    def _get_fname_fsize_hdr(item, idx, extension, force_astropy=False):
         try:
             item_path = Path(item)
         except TypeError:
@@ -248,19 +293,7 @@ def fits_summary(
                 raise ValueError(f"fname_option `{fname_option}`not understood.")
             fsize = item_path.stat().st_size
             # Don't change to MB/GB, which will make it float...
-            if (
-                not verify_fix
-                and not kwargs
-                and example_header is None
-                and keywords is not None
-                and keywords != "*"
-            ):
-                hdr = fits.getheader(item_path, extension)
-            else:
-                with fits.open(item_path, **kwargs) as hdul:
-                    if verify_fix:
-                        hdul.verify("fix")
-                    hdr = hdul[extension].header.copy()
+            hdr = _read_path_header(item_path, extension, force_astropy=force_astropy)
         elif isinstance(item, CCDData):
             # NOTE: CCDData does not support extension (only available when it
             #   is being read)!
@@ -290,7 +323,12 @@ def fits_summary(
 
     first_info = None
     if example_header is not None or keywords is None or keywords == "*":
-        first_info = _get_fname_fsize_hdr(fitslist[0], 0, extension=extension)
+        first_info = _get_fname_fsize_hdr(
+            fitslist[0],
+            0,
+            extension=extension,
+            force_astropy=example_header is not None,
+        )
 
     # Save example header
     if example_header is not None:
