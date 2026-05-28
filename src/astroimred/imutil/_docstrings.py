@@ -105,7 +105,7 @@ def NDCOMB_NOT_IMPLEMENTED(indent=0):
         """
 .. warning::
 
-    A few options are not implemented yet: blank, logfile, statsec with
+    A few options are not implemented yet: blank, statsec with
     input/output/overlap, weight, scale_sample, zero_sample, ``"mode"`` for
     scale/zero/weight.""",
         indent,

@@ -18,10 +18,8 @@ from astro_ndslice import (
 from astropy.io import fits
 from astropy.io.fits.verify import VerifyError
 from astropy.nddata import CCDData
-from astropy.table import Table
 from astropy.wcs import WCS
 
-from astroimred._core.system import get_size
 from astroimred._core.types import HDUExt, StrPathLike
 from astroimred.fitsmgmt.header import update_tlm
 from astroimred.fitsmgmt.io import _parse_data_header, load_ccd, write2fits
@@ -361,43 +359,6 @@ def update_hdr(
 
     # Add "IRAF-TLM" like header key for continuity with IRAF.
     update_tlm(header)
-
-
-def init_log_table(
-    items: Sequence[Any], logfile: StrPathLike | None
-) -> tuple[Path | None, dict[str, list[Any]] | None]:
-    """Initialize the optional imcombine CSV log table.
-
-    Parameters
-    ----------
-    items : sequence
-        Input paths or CCD-like objects.
-    logfile : path-like or None
-        Output CSV path. If `None`, logging is disabled.
-
-    Returns
-    -------
-    logfile : `~pathlib.Path` or None
-        Normalized log path.
-    table_dict : dict or None
-        Initial table columns containing input labels and approximate sizes.
-    """
-    if logfile is None:
-        return None, None
-
-    logfile = Path(logfile)
-    table_dict = {"file": [], "filesize": []}
-    for item in items:
-        try:
-            fpath = Path(item)
-            item_size = fpath.stat().st_size
-        except (TypeError, ValueError, FileNotFoundError):
-            fpath = f"User-provided {item.__class__.__name__}"
-            item_size = get_size(item)
-        table_dict["file"].append(fpath)
-        table_dict["filesize"].append(item_size)
-
-    return logfile, table_dict
 
 
 def setup_offsets(
@@ -1297,39 +1258,3 @@ def write_imcombine_outputs(
                 "output_flags_data is required when output_flags is requested."
             )
         write2fits(output_flags_data, hdr0, output_flags, return_ccd=False, **write_kw)
-
-
-def write_imcombine_logfile(
-    logfile: StrPathLike | None,
-    table_dict: dict[str, list[Any]] | None,
-    ndim: int,
-    offsets: np.ndarray,
-    zeros: np.ndarray,
-    scales: np.ndarray,
-    weights: np.ndarray,
-    gns: np.ndarray | float,
-    rds: np.ndarray | float,
-    sns: np.ndarray | float,
-    verbose: bool,
-) -> None:
-    """Write the optional CSV summary table for an imcombine run."""
-    if logfile is None:
-        return
-    if table_dict is None:
-        raise ValueError("table_dict is required when logfile is requested.")
-    if verbose:
-        logger.info("- Writing summary table...")
-
-    table_dict["scales"] = list(scales)
-    table_dict["zeros"] = list(zeros)
-    table_dict["weights"] = list(weights)
-    table = Table(table_dict)
-    table["gains"] = gns
-    table["readnoises"] = rds
-    table["snoises"] = sns
-    # NOTE: the indexing in python is [z, y, x] order!!
-    for i in range(ndim, 0, -1):
-        table[f"offset{i}"] = offsets[:, ndim - i]
-    table.write(logfile, format="csv")
-    if verbose:
-        logger.info("Done.")

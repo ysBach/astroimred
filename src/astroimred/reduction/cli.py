@@ -424,11 +424,6 @@ def main():
     help="Exposure-time header key.",
 )
 @click.option(
-    "--logfile",
-    type=click.Path(dir_okay=False, writable=True, path_type=Path),
-    help="Write imcombine log table.",
-)
-@click.option(
     "--output-mask",
     "--rejmask",
     type=click.Path(dir_okay=False, writable=True, path_type=Path),
@@ -512,7 +507,6 @@ def comb_command(
     memlimit,
     imcmb_key,
     exposure_key,
-    logfile,
     output_mask,
     output_nrej,
     output_std,
@@ -558,7 +552,6 @@ def comb_command(
             rdnoise=rdnoise,
             gain=gain,
             snoise=snoise,
-            logfile=logfile,
             combine=combine,
             dtype=dtype,
             memlimit=memlimit,
