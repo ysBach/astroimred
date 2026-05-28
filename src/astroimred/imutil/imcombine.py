@@ -30,7 +30,7 @@ from ._util_fits import (
     write_imcombine_outputs,
 )
 
-__all__ = ["group_combine", "group_save", "imcombine", "ndcombine"]
+__all__ = ["group_combine", "group_save", "imcombine"]
 
 """
 removed : headers, project, masktype, maskvalue, sigscale, grow
@@ -314,6 +314,53 @@ def _as_scalar_ccdclip_parameter(name: str, value: str | npt.ArrayLike | None) -
     return first
 
 
+def _subset_plane_values_for_active_chunk(
+    values: npt.ArrayLike,
+    active_indices: np.ndarray,
+    *,
+    reference_to_0th: bool,
+    operation: str,
+) -> np.ndarray:
+    """Return active per-plane values while preserving image-0 rebasing."""
+    arr = np.asarray(values, dtype=float).reshape(-1)
+    if arr.size == 0:
+        raise ValueError("Per-plane values must not be empty.")
+    if reference_to_0th:
+        if operation == "subtract":
+            arr = arr - arr[0]
+        elif operation == "divide":
+            arr = arr / arr[0]
+        else:
+            raise ValueError(f"Unknown plane-value operation: {operation}")
+    return arr[active_indices]
+
+
+def _ndcombine_kwargs_for_active_chunk(
+    ndcombine_kw: dict[str, object],
+    active_indices: np.ndarray,
+) -> dict[str, object]:
+    """Subset plane-wise kwargs for a compact chunk stack."""
+    chunk_kw = dict(ndcombine_kw)
+    chunk_kw["zero"] = _subset_plane_values_for_active_chunk(
+        ndcombine_kw["zero"],
+        active_indices,
+        reference_to_0th=bool(ndcombine_kw["zero_to_0th"]),
+        operation="subtract",
+    )
+    chunk_kw["scale"] = _subset_plane_values_for_active_chunk(
+        ndcombine_kw["scale"],
+        active_indices,
+        reference_to_0th=bool(ndcombine_kw["scale_to_0th"]),
+        operation="divide",
+    )
+    chunk_kw["weight"] = np.asarray(ndcombine_kw["weight"], dtype=float).reshape(-1)[
+        active_indices
+    ]
+    chunk_kw["zero_to_0th"] = False
+    chunk_kw["scale_to_0th"] = False
+    return chunk_kw
+
+
 def imcombine(
     inputs: SummaryInput,
     mask: np.ndarray | None = None,
@@ -442,6 +489,7 @@ def imcombine(
     offsets, sh_comb = offseted_shape(
         shapes, offsets, method="outer", offset_order_xyz=False, intify_offsets=True
     )
+    compact_chunks = reject_fullname not in {"minmax", "pclip"}
 
     mem_req, num_chunk, chunks = check_stack_memory(
         ncombine=ncombine,
@@ -449,6 +497,8 @@ def imcombine(
         dtype=dtype,
         combine=combine,
         memlimit=memlimit,
+        offsets=offsets if compact_chunks else None,
+        shapes=shapes if compact_chunks else None,
     )
     if verbose:
         logger.info("Done.")
@@ -537,7 +587,6 @@ def imcombine(
         "snoise": sns,  # it is sns, not snoise , as it was updated above.
         "pclip": pclip,
         "full": full,
-        "verbose": verbose,
     }
     if reject_fullname == "ccdclip":
         ndcombine_kw["rdnoise"] = _as_scalar_ccdclip_parameter("rdnoise", rds)
@@ -548,7 +597,7 @@ def imcombine(
     _t = Time.now()
 
     if num_chunk == 1:
-        comb = ndcombine(
+        comb = imc.ndcombine(
             arr=arr_full,
             mask=mask_full,
             **ndcombine_kw,
@@ -571,7 +620,7 @@ def imcombine(
             if verbose:
                 logger.info("-- chunk %d/%d: %s", i_chunk, num_chunk, chunk_slices)
 
-            arr_chunk, mask_chunk, var_chunk = load_stack_chunk(
+            arr_chunk, mask_chunk, var_chunk, active_indices = load_stack_chunk(
                 items=items,
                 offsets=offsets,
                 shapes=shapes,
@@ -583,12 +632,21 @@ def imcombine(
                 extension=extension,
                 extension_mask=e_m,
                 extension_uncertainty=e_u,
+                compact=compact_chunks,
             )
 
-            combined_chunk = ndcombine(
+            if active_indices.size == 0:
+                comb[chunk_slices] = np.nan
+                if full and mask_total is None:
+                    mask_total = np.zeros((ncombine, *sh_comb), dtype=bool)
+                del arr_chunk, mask_chunk, var_chunk
+                continue
+
+            chunk_kw = _ndcombine_kwargs_for_active_chunk(ndcombine_kw, active_indices)
+            combined_chunk = imc.ndcombine(
                 arr=arr_chunk,
                 mask=mask_chunk,
-                **ndcombine_kw,
+                **chunk_kw,
             )
 
             if full:
@@ -605,36 +663,39 @@ def imcombine(
                 mask_total_chunk = _mask_total_from_parts(
                     mask_chunk, mask_rej_chunk, mask_thresh_chunk
                 )
+                mask_slices = (slice(None), *chunk_slices)
 
                 if mask_total is None:
                     mask_shape = (ncombine, *sh_comb)
-                    mask_total = np.empty(mask_shape, dtype=bool)
+                    mask_total = np.zeros(mask_shape, dtype=bool)
                 if std_chunk is not None and std is None:
-                    std = np.empty(sh_comb, dtype=std_chunk.dtype)
+                    std = np.full(sh_comb, np.nan, dtype=std_chunk.dtype)
                 if mask_rej_chunk is not None and mask_rej is None:
-                    mask_rej = np.empty((ncombine, *sh_comb), dtype=bool)
+                    mask_rej = np.zeros((ncombine, *sh_comb), dtype=bool)
                 if mask_thresh_chunk is not None and mask_thresh is None:
-                    mask_thresh = np.empty((ncombine, *sh_comb), dtype=bool)
+                    mask_thresh = np.zeros((ncombine, *sh_comb), dtype=bool)
                 if low_chunk is not None and low is None:
-                    low = np.empty(sh_comb, dtype=low_chunk.dtype)
+                    low = np.full(sh_comb, np.nan, dtype=low_chunk.dtype)
                 if upp_chunk is not None and upp is None:
-                    upp = np.empty(sh_comb, dtype=upp_chunk.dtype)
+                    upp = np.full(sh_comb, np.nan, dtype=upp_chunk.dtype)
                 if nit_chunk is not None and nit is None:
-                    nit = np.empty(sh_comb, dtype=np.asarray(nit_chunk).dtype)
+                    nit = np.zeros(sh_comb, dtype=np.asarray(nit_chunk).dtype)
                 if output_flags_chunk is not None and output_flags_data is None:
-                    output_flags_data = np.empty(
+                    output_flags_data = np.zeros(
                         sh_comb, dtype=np.asarray(output_flags_chunk).dtype
                     )
 
                 comb[chunk_slices] = comb_chunk
                 if std_chunk is not None:
                     std[chunk_slices] = std_chunk
-                mask_slices = (slice(None), *chunk_slices)
-                mask_total[mask_slices] = mask_total_chunk
+                mask_total[mask_slices] = False
+                mask_total[(active_indices, *chunk_slices)] = mask_total_chunk
                 if mask_rej_chunk is not None:
-                    mask_rej[mask_slices] = mask_rej_chunk
+                    mask_rej[mask_slices] = False
+                    mask_rej[(active_indices, *chunk_slices)] = mask_rej_chunk
                 if mask_thresh_chunk is not None:
-                    mask_thresh[mask_slices] = mask_thresh_chunk
+                    mask_thresh[mask_slices] = False
+                    mask_thresh[(active_indices, *chunk_slices)] = mask_thresh_chunk
                 if low_chunk is not None:
                     low[chunk_slices] = low_chunk
                 if upp_chunk is not None:
@@ -763,7 +824,7 @@ def imcombine(
         return comb
 
 
-imcombine.__doc__ = f"""A helper function for ``imred.ndcombine`` to cope with FITS files.
+imcombine.__doc__ = f"""A FITS-file helper for ``imcombiners.ndcombine``.
 
     {docstrings.NDCOMB_NOT_IMPLEMENTED(indent=4)}
 
@@ -849,85 +910,3 @@ imcombine.__doc__ = f"""A helper function for ``imred.ndcombine`` to cope with F
 
     {docstrings.IMCOMBINE_LINK(indent=4)}
     """
-
-
-# ------------------------------------------------------------------------------------ #
-def ndcombine(
-    arr: np.ndarray,
-    mask: np.ndarray | None = None,
-    thresholds: tuple[float, float] | list[float] | None = None,
-    zero: str | npt.ArrayLike | None = None,
-    scale: str | npt.ArrayLike | None = None,
-    weight: str | npt.ArrayLike | None = None,
-    zero_to_0th: bool = True,
-    scale_to_0th: bool = True,
-    zero_sigclip_kwargs: dict[str, object] | None = None,
-    scale_sigclip_kwargs: dict[str, object] | None = None,
-    reject: str | None = None,
-    cenfunc: str = "median",
-    clip_cen: str | None = None,
-    sigma: float | tuple[float, float] | list[float] | None = None,
-    maxiters: int = 5,
-    ddof: int = 1,
-    nkeep: int = 1,
-    maxrej: int | None = None,
-    n_minmax: tuple[int, int] | list[int] | None = None,
-    rdnoise: float = 0.0,
-    gain: float = 1.0,
-    snoise: float = 0.0,
-    pclip: float = -0.5,
-    combine: str = "average",
-    revert_on_nkeep: bool = True,
-    grow: float | None = None,
-    verbose: bool = False,
-    full: bool = False,
-) -> np.ndarray | tuple:
-    """Combine an array stack using `imcombiners.ndcombine`.
-
-    Full diagnostics follow `imcombiners` order:
-    ``combined, mask_rej, mask_thresh, std, low, upp, nit, output_flags``.
-    """
-    sigma = [3.0, 3.0] if sigma is None else sigma
-    n_minmax = [1, 1] if n_minmax is None else n_minmax
-    reject_fullname = _set_reject_name(reject)
-
-    if verbose and reject is not None:
-        logger.info(
-            "- imcombiners.ndcombine: combine=%s reject=%s full=%s",
-            combine,
-            reject_fullname,
-            full,
-        )
-
-    return imc.ndcombine(
-        np.asarray(arr),
-        mask=mask,
-        thresholds=thresholds,
-        combine=combine,
-        reject=reject_fullname,
-        sigma=tuple(sigma),
-        cenfunc=cenfunc,
-        clip_cen=clip_cen,
-        maxiters=maxiters,
-        ddof=ddof,
-        nkeep=nkeep,
-        maxrej=maxrej,
-        n_minmax=tuple(n_minmax),
-        rdnoise=rdnoise,
-        gain=gain,
-        snoise=snoise,
-        pclip=pclip,
-        zero=zero,
-        scale=scale,
-        weight=weight,
-        zero_to_0th=zero_to_0th,
-        scale_to_0th=scale_to_0th,
-        zero_sigclip_kwargs=zero_sigclip_kwargs,
-        scale_sigclip_kwargs=scale_sigclip_kwargs,
-        revert_on_nkeep=revert_on_nkeep,
-        grow=grow,
-        full=full,
-    )
-
-
-ndcombine.__doc__ = imc.ndcombine.__doc__

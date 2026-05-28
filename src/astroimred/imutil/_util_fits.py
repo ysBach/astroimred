@@ -595,16 +595,34 @@ def extract_stack_metadata(
                     imcmb_val.append(Path(item).name)
                 except TypeError:
                     imcmb_val.append(f"User-provided {type(item)}")
-            data = _parse_imc_data_header(
-                item, extension=extension, parse_header=False
-            )[0]
-            if data is None:
-                raise ValueError(f"Could not read data from input {i}.")
-            raw_shapes[i,] = data.shape
-            if trimsec is not None:
-                shapes[i,] = _trimmed_shape(data.shape, trimsec)
+
+            try:
+                Path(item)
+            except TypeError:
+                data = _parse_imc_data_header(
+                    item, extension=extension, parse_header=False
+                )[0]
+                if data is None:
+                    raise ValueError(f"Could not read data from input {i}.") from None
+                raw_shape = data.shape
             else:
-                shapes[i,] = data.shape
+                _, hdr = _parse_imc_data_header(
+                    item, extension=extension, parse_data=False, copy=False
+                )
+                if hdr is None:
+                    raise ValueError(f"Could not read header from input {i}.")
+                if hdr["NAXIS"] != ndim:
+                    raise ValueError(
+                        "All FITS files must have the identical ndim, "
+                        + "though they can have different sizes."
+                    )
+                raw_shape = tuple(int(hdr[f"NAXIS{i}"]) for i in range(ndim, 0, -1))
+
+            raw_shapes[i,] = raw_shape
+            if trimsec is not None:
+                shapes[i,] = _trimmed_shape(raw_shape, trimsec)
+            else:
+                shapes[i,] = raw_shape
 
     return {
         "hdr0": hdr0,
@@ -630,6 +648,8 @@ def check_stack_memory(
     dtype: npt.DTypeLike,
     combine: str,
     memlimit: float | None,
+    offsets: np.ndarray | None = None,
+    shapes: np.ndarray | None = None,
 ) -> tuple[float, int, list[tuple[slice, ...]]]:
     """Estimate stack memory and return the output chunks to process.
 
@@ -645,6 +665,10 @@ def check_stack_memory(
         Combine method; median-like combines need a larger working factor.
     memlimit : float or None
         Approximate byte limit. Non-positive or `None` disables chunking.
+    offsets, shapes : ndarray, optional
+        Normalized image origins and shapes in NumPy axis order. When supplied,
+        chunk planning estimates the active stack depth in each output chunk
+        instead of assuming all input images overlap every output pixel.
 
     Returns
     -------
@@ -670,8 +694,20 @@ def check_stack_memory(
     memory_factor = 3.0 if combine_key in {"med", "median"} else 2.0
     memory_factor *= 1.5
     mem_req = memory_factor * stacksize
+    full_chunk = tuple(slice(0, size) for size in sh_comb)
     if memlimit is None or memlimit <= 0 or mem_req <= memlimit:
-        return mem_req, 1, [tuple(slice(0, size) for size in sh_comb)]
+        return mem_req, 1, [full_chunk]
+
+    if offsets is not None and shapes is not None:
+        chunks = _plan_offset_chunks(
+            full_chunk=full_chunk,
+            offsets=np.asarray(offsets, dtype=int),
+            shapes=np.asarray(shapes, dtype=int),
+            dtype=dtype,
+            memory_factor=memory_factor,
+            memlimit=memlimit,
+        )
+        return mem_req, len(chunks), chunks
 
     # FITS stores the last Python axis contiguously.  Prefer chunking the first
     # image axis so each read keeps the full fast axis and stays row-slab-like
@@ -707,6 +743,70 @@ def check_stack_memory(
         chunks.append(tuple(slices))
 
     return mem_req, len(chunks), chunks
+
+
+def _plan_offset_chunks(
+    full_chunk: tuple[slice, ...],
+    offsets: np.ndarray,
+    shapes: np.ndarray,
+    dtype: npt.DTypeLike,
+    memory_factor: float,
+    memlimit: float,
+) -> list[tuple[slice, ...]]:
+    """Return offset-aware chunks whose active stack estimates fit memory."""
+    itemsize = np.dtype(dtype).itemsize
+
+    def chunk_memory(chunk: tuple[slice, ...]) -> float:
+        starts = np.array([sl.start for sl in chunk])
+        stops = np.array([sl.stop for sl in chunk])
+        image_stops = offsets + shapes
+        active = np.count_nonzero(
+            np.all(np.minimum(stops, image_stops) > np.maximum(starts, offsets), axis=1)
+        )
+        pixels = np.prod([sl.stop - sl.start for sl in chunk])
+        return float(memory_factor * max(active, 1) * pixels * itemsize)
+
+    def split_score(chunk: tuple[slice, ...], axis: int) -> tuple[float, float, int]:
+        start = chunk[axis].start
+        stop = chunk[axis].stop
+        mid = (start + stop) // 2
+        children = []
+        for child_start, child_stop in [(start, mid), (mid, stop)]:
+            slices = list(chunk)
+            slices[axis] = slice(child_start, child_stop)
+            children.append(tuple(slices))
+        child_memory = [chunk_memory(child) for child in children]
+        return max(child_memory), sum(child_memory), axis
+
+    chunks = []
+    stack = [full_chunk]
+    while stack:
+        chunk = stack.pop()
+        if chunk_memory(chunk) <= memlimit:
+            chunks.append(chunk)
+            continue
+
+        splittable_axes = [
+            axis for axis, sl in enumerate(chunk) if sl.stop - sl.start > 1
+        ]
+        if not splittable_axes:
+            raise ValueError(
+                "memlimit is too small to hold even one FITS chunk. "
+                + f"Try memlimit > {chunk_memory(chunk):.1e}."
+            )
+
+        split_axis = min(splittable_axes, key=lambda axis: split_score(chunk, axis))
+        start = chunk[split_axis].start
+        stop = chunk[split_axis].stop
+        mid = (start + stop) // 2
+        upper = list(chunk)
+        upper[split_axis] = slice(mid, stop)
+        lower = list(chunk)
+        lower[split_axis] = slice(start, mid)
+        stack.append(tuple(upper))
+        stack.append(tuple(lower))
+
+    return chunks
 
 
 def calculate_zsw(
@@ -996,28 +1096,43 @@ def load_stack_chunk(
     extension: HDUExt,
     extension_mask: HDUExt,
     extension_uncertainty: HDUExt,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray | None]:
+    compact: bool = True,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray | None, np.ndarray]:
     """Load one output-image chunk into an offset-expanded mini stack.
 
-    The returned arrays have shape ``(ncombine, *chunk_shape)``. Inputs that do
-    not overlap the chunk remain NaN/False, matching the full-stack offset
-    representation.
+    When ``compact`` is `True`, the returned arrays have shape
+    ``(nactive, *chunk_shape)`` and contain only input images that overlap the
+    chunk. ``active_indices`` maps local stack planes back to the original
+    image index. When ``compact`` is `False`, all input planes are retained and
+    non-overlap regions stay as NaN/False to preserve rank-rejection semantics.
     """
     ncombine = len(items)
     chunk_shape = tuple(sl.stop - sl.start for sl in chunk_slices)
-    var_chunk = None
-    if extension_uncertainty is not None:
-        var_chunk = np.nan * np.zeros(shape=(ncombine, *chunk_shape), dtype=dtype)
-
-    arr_chunk = np.nan * np.zeros(shape=(ncombine, *chunk_shape), dtype=dtype)
-    mask_chunk = np.zeros(shape=(ncombine, *chunk_shape), dtype=bool)
-
     chunk_starts = np.array([sl.start for sl in chunk_slices])
     chunk_stops = np.array([sl.stop for sl in chunk_slices])
 
-    for _i, (item, _o, _s, _s0) in enumerate(
-        zip(items, offsets, shapes, raw_shapes, strict=False)
-    ):
+    image_starts_all = offsets
+    image_stops_all = offsets + shapes
+    starts_all = np.maximum(chunk_starts, image_starts_all)
+    stops_all = np.minimum(chunk_stops, image_stops_all)
+    overlaps = np.all(stops_all > starts_all, axis=1)
+    active_indices = (
+        np.flatnonzero(overlaps) if compact else np.arange(ncombine, dtype=int)
+    )
+    nactive = active_indices.size
+
+    var_chunk = None
+    if extension_uncertainty is not None:
+        var_chunk = np.full((nactive, *chunk_shape), np.nan, dtype=dtype)
+
+    arr_chunk = np.full((nactive, *chunk_shape), np.nan, dtype=dtype)
+    mask_chunk = np.zeros(shape=(nactive, *chunk_shape), dtype=bool)
+
+    for plane, _i in enumerate(active_indices):
+        item = items[_i]
+        _o = offsets[_i]
+        _s = shapes[_i]
+        _s0 = raw_shapes[_i]
         image_starts = _o
         image_stops = _o + _s
         starts = np.maximum(chunk_starts, image_starts)
@@ -1047,13 +1162,13 @@ def load_stack_chunk(
         if mask is not None:
             item_mask |= mask[_i,][data_slices]
 
-        full_insert_slices = (_i, *insert_slices)
+        full_insert_slices = (plane, *insert_slices)
         arr_chunk[full_insert_slices] = data
         mask_chunk[full_insert_slices] = item_mask
         if var is not None and var_chunk is not None:
             var_chunk[full_insert_slices] = var
 
-    return arr_chunk, mask_chunk, var_chunk
+    return arr_chunk, mask_chunk, var_chunk, active_indices
 
 
 def log_zsw_table(

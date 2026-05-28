@@ -22,6 +22,15 @@ __all__ = [
     "epadu2dB",
 ]
 
+_IMCK_STACK_DTYPES = {
+    np.dtype(np.uint8),
+    np.dtype(np.uint16),
+    np.dtype(np.int16),
+    np.dtype(np.int32),
+    np.dtype(np.float32),
+    np.dtype(np.float64),
+}
+
 
 def sqsum(*args: object) -> object:
     """Return the sum of squares of all inputs."""
@@ -383,6 +392,21 @@ def _normalize_binning_factors(arr_shape, factors, order_xyz):
     return np.asarray(normalized, dtype=np.intp)
 
 
+def _imck_median_binning(
+    reshaped: np.ndarray,
+    nbin: np.ndarray,
+    factors: np.ndarray,
+) -> np.ndarray:
+    """Median-bin a reshaped block view through imcombiners."""
+    bin_axes = tuple(range(0, reshaped.ndim, 2))
+    factor_axes = tuple(range(1, reshaped.ndim, 2))
+    stack = np.transpose(reshaped, (*factor_axes, *bin_axes)).reshape(
+        int(np.prod(factors)),
+        *(int(n) for n in nbin),
+    )
+    return imck.median(np.ascontiguousarray(stack))
+
+
 def binning(
     arr: np.ndarray,
     factors: tuple[int, ...] | None = None,
@@ -458,6 +482,15 @@ def binning(
         int(item) for pair in zip(nbin, factors, strict=True) for item in pair
     )
     reshaped = arr.reshape(newshape)
+    dtype = arr.dtype
+    if dtype.byteorder not in {"=", "|"}:
+        dtype = dtype.newbyteorder("=")
+    if (
+        binfunc is np.median
+        and not (np.issubdtype(arr.dtype, np.inexact) and np.isnan(arr).any())
+        and dtype in _IMCK_STACK_DTYPES
+    ):
+        return _imck_median_binning(reshaped, nbin, factors)
     return binfunc(reshaped, axis=tuple(range(1, reshaped.ndim, 2)))
 
 
