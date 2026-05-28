@@ -69,6 +69,14 @@ def calc_airmass(
     # numpy version:
     # %timeit air.calc_airmass(10)
     # 3.65 µs +/- 93.5 ns per loop (mean +/- std. dev. of 7 runs, 100000 loops each)
+    # MBP 14" [2024, macOS 26.4.1, M4Pro(8P+4E/G20c/N16c/48G)],
+    # 2026-05-27:
+    # numexpr scalar version:
+    # %timeit calc_airmass_numexpr(10)
+    # 4.41 µs +/- 89.9 ns per loop (7 runs, 10000 loops each)
+    # numpy version:
+    # %timeit air.calc_airmass(10)
+    # 705 ns +/- 13 ns per loop (7 runs, 100000 loops each)
 
     if cos_zd is None:
         cos_zd = np.cos(np.deg2rad(zd_deg))

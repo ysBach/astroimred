@@ -309,6 +309,18 @@ def imarith(
     GB (2400MHz DDR4), Radeon Pro 560X (4GB)] 2020-11-02 21:50:07 (KST:
     GMT+09:00) - ysBach
 
+    Timing on MBP 14" [2024, macOS 26.4.1,
+    M4Pro(8P+4E/G20c/N16c/48G)], 2026-05-27:
+
+    .. code-block:: python
+
+        arr = np.ones((1000, 1000), dtype="float32")
+        fits.writeto("single.fits", arr, overwrite=True)
+        %timeit CCDData(arr, unit="adu")
+        # 2.21 µs ± 16.9 ns per loop (7 runs, 5000 loops each)
+        %timeit fits.getdata("single.fits")
+        # 175 µs ± 71.7 µs per loop (7 runs, 100 loops each)
+
     The type checking ``isinstance(im, `~astropy.nddata.CCDData`)`` takes only ~ 0.1 us.
     """
 

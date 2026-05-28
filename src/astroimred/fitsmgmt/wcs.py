@@ -314,6 +314,49 @@ def wcsremove(
     The time it takes to parse the header and open the file is 0.4 ms, so the
     key removal part is changed from ~ 10 ms to ~ 1.5 ms (6-7 times faster)
 
+    Same benchmark on MBP 14" [2024, macOS 26.4.1,
+    M4Pro(8P+4E/G20c/N16c/48G)], 2026-05-27, using a 33.6 MB
+    FITS file:
+
+    .. code-block:: text
+
+        V A C
+        O X O = 2.88 ± 0.05 ms
+        X X O = 2.93 ± 0.16 ms
+        O O O = 2.88 ± 0.04 ms
+        X O O = 2.92 ± 0.26 ms
+        X X X = 2.89 ± 0.06 ms
+        X O X = 2.89 ± 0.15 ms
+
+    Reproduction:
+
+    .. code-block:: python
+
+        whdr = fits.Header()
+        whdr["BUNIT"] = "adu"
+        whdr["CTYPE1"] = "RA---TAN"
+        whdr["CTYPE2"] = "DEC--TAN"
+        whdr["CRPIX1"] = 1024.0
+        whdr["CRPIX2"] = 1024.0
+        whdr["CRVAL1"] = 10.0
+        whdr["CRVAL2"] = 20.0
+        whdr["CD1_1"] = -1e-4
+        whdr["CD1_2"] = 0.0
+        whdr["CD2_1"] = 0.0
+        whdr["CD2_2"] = 1e-4
+        whdr["EQUINOX"] = 2000.0
+        fits.writeto(
+            "wcs_33mb.fits",
+            np.zeros((2048, 2048), dtype="float64"),
+            whdr,
+            overwrite=True,
+        )
+        %timeit air.wcsremove("wcs_33mb.fits", verbose=True, ccddata=True)
+        %timeit air.wcsremove("wcs_33mb.fits", verbose=False, ccddata=True)
+        %timeit air.wcsremove("wcs_33mb.fits", additional_keys=["COMMEnT"], verbose=True, ccddata=True)
+        %timeit air.wcsremove("wcs_33mb.fits", additional_keys=["COMMEnT"], verbose=False, ccddata=True)
+        %timeit air.wcsremove("wcs_33mb.fits", verbose=False, ccddata=False)
+        %timeit air.wcsremove("wcs_33mb.fits", additional_keys=["COMMEnT"], verbose=False, ccddata=False)
 
     """
     # Define header keywords to be deleted in regex:

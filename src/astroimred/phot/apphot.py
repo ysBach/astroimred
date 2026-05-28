@@ -398,6 +398,9 @@ def apphot_annulus(
         # This takes about 0.7 us for 1-row table. MBP 14" [2021, macOS 13.1,
         # M1Pro(6P+2E/G16c/N16c/32G)], 2023-06-19 22:46:08 (KST: GMT+09:00)
         # -YPB
+        # MBP 14" [2024, macOS 26.4.1, M4Pro(8P+4E/G20c/N16c/48G)],
+        # 2026-05-27: ``phot.to_pandas().drop(["id"], axis=1)`` takes
+        # about 152 us for a 1-row QTable.
         phot = phot.to_pandas()
         return phot.drop(["id"], axis=1)
     else:

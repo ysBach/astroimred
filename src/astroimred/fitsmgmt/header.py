@@ -95,6 +95,28 @@ def cmt2hdr(
     1.89 ms +/- 144 µs per loop (mean +/- std. dev. of 7 runs, 1000 loops each)
     %timeit air.cmt2hdr(ccd.header.copy(), 'histORy', 'test')
     1.95 ms +/- 146 µs per loop (mean +/- std. dev. of 7 runs, 100 loops each)
+
+    Same benchmark on MBP 14" [2024, macOS 26.4.1,
+    M4Pro(8P+4E/G20c/N16c/48G)], 2026-05-27:
+
+    .. code-block:: python
+
+        hdr = fits.Header()
+        hdr["SIMPLE"] = True
+        hdr["BITPIX"] = 8
+        hdr["NAXIS"] = 0
+        hdr["EXPTIME"] = 20
+        for i in range(193):
+            hdr[f"H{i:03d}"] = i
+
+        %timeit hdr.copy()
+        # 224 µs ± 654 ns per loop (7 runs, 500 loops each)
+        %timeit air.cmt2hdr(hdr.copy(), "h", "test")
+        # 396 µs ± 10.2 µs per loop (7 runs, 200 loops each)
+        %timeit air.cmt2hdr(hdr.copy(), "hist", "test")
+        # 394 µs ± 5.17 µs per loop (7 runs, 200 loops each)
+        %timeit air.cmt2hdr(hdr.copy(), "histORy", "test")
+        # 397 µs ± 3.35 µs per loop (7 runs, 200 loops each)
     """
     if set_kw is None:
         set_kw = {"after": -1}
@@ -138,6 +160,14 @@ def update_tlm(header: fits.Header) -> None:
     (2400MHz DDR4), Radeon Pro 560X (4GB)]:
     %timeit air.update_tlm(ccd.header)
     # 443 µs +/- 19.5 µs per loop (mean +/- std. dev. of 7 runs, 1000 loops each)
+
+    Timing on MBP 14" [2024, macOS 26.4.1,
+    M4Pro(8P+4E/G20c/N16c/48G)], 2026-05-27:
+
+    .. code-block:: python
+
+        %timeit air.update_tlm(hdr)
+        # 97.8 µs ± 1.38 µs per loop (7 runs, 500 loops each)
     """
     now = Time(Time.now(), precision=0).isot
     with contextlib.suppress(KeyError):
@@ -629,6 +659,24 @@ def hdrval(
         Pro 560X (4GB)]
         %timeit ((air.hdrval(None, ccd.header, "EXPTIME", unit=u.s)
                  / air.hdrval(3*u.s, ccd.header, "EXPTIME", unit=u.s)).si.value)
+
+        Same tests on MBP 14" [2024, macOS 26.4.1,
+        M4Pro(8P+4E/G20c/N16c/48G)], 2026-05-27:
+
+        # w/o unit
+        assert hdrval(None,   hdr, "EXPTIME", default=0) == real_v  # ~ 1.65 us
+        assert hdrval(None,   hdr, "EXPTIxx", default=0) == default_v # ~ 0.798 us
+        assert hdrval(test_v, hdr, "EXPTIxx", default=0) == test_v  # ~ 0.073 us
+        assert hdrval(test_q, hdr, "EXPTIxx", default=0) == test_v  # ~ 0.207 us
+        # w/ unit
+        assert hdrval(None,   hdr, "EXPTIME", default=0, unit='s') == real_q  # ~ 4.23 us
+        assert hdrval(None,   hdr, "EXPTIxx", default=0, unit='s') == default_q # ~ 3.23 us
+        assert hdrval(test_v, hdr, "EXPTIxx", default=0, unit='s') == test_q  # ~ 2.37 us
+        assert hdrval(test_q, hdr, "EXPTIxx", default=0, unit='s') == test_q  # ~ 2.31 us
+
+        %timeit ((air.hdrval(None, hdr, "EXPTIME", unit=u.s)
+                 / air.hdrval(3*u.s, hdr, "EXPTIME", unit=u.s)).si.value)
+        # 16.5 µs ± 201 ns per loop (7 runs, 5000 loops each)
     """
     if value is None:
         if key is None:
