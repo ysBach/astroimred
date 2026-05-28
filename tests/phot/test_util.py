@@ -8,87 +8,10 @@ from numpy.testing import assert_allclose, assert_array_equal
 from astroimred._core.astropy_helpers import (
     Gaussian2D_correct,
     gaussian_kernel,
-    sigma_clipper,
 )
 from astroimred._core.geometry import bezel_mask
-from astroimred._core.numeric import magsum, normalize, quad_sum, sqsum, sstd
+from astroimred._core.numeric import magsum, normalize, quad_sum, sigma_clipper, sqsum
 from astroimred._core.scales import degree_scale, percent_scale
-
-
-class TestSstd:
-    """Tests for sstd function."""
-
-    def test_sstd_ddof0(self, simple_array_for_std):
-        """
-        Test sstd with ddof=0 (population std).
-
-        Array: [1, 2, 3, 4, 5]
-        Mean = 3
-        Variance = ((1-3)^2 + (2-3)^2 + (3-3)^2 + (4-3)^2 + (5-3)^2) / 5
-                 = (4 + 1 + 0 + 1 + 4) / 5 = 10/5 = 2
-        Std = sqrt(2) = 1.4142135...
-        """
-        expected = np.sqrt(2.0)
-        result = sstd(simple_array_for_std, ddof=0, nan=True)
-        assert_allclose(result, expected, rtol=1e-10)
-
-    def test_sstd_ddof1(self, simple_array_for_std):
-        """
-        Test sstd with ddof=1 (sample std).
-
-        Array: [1, 2, 3, 4, 5], n=5
-        Sample variance = 10 / (5-1) = 2.5
-        Sample std = sqrt(2.5) = 1.5811388...
-
-        But sstd(..., nan=True) uses: sqrt(n/(n-ddof)) * nanstd
-        nanstd with default ddof=0 gives sqrt(2)
-        So: sqrt(5/4) * sqrt(2) = sqrt(5/4 * 2) = sqrt(2.5)
-        """
-        expected = np.sqrt(2.5)
-        result = sstd(simple_array_for_std, ddof=1, nan=True)
-        assert_allclose(result, expected, rtol=1e-10)
-
-    def test_sstd_with_nan(self, array_with_nan):
-        """
-        Test sstd ignores NaN values when nan=True.
-
-        Array: [1, 2, NaN, 4, 5] -> effective [1, 2, 4, 5], n=4
-        Mean = 12/4 = 3
-        Variance = ((1-3)^2 + (2-3)^2 + (4-3)^2 + (5-3)^2) / 4
-                 = (4 + 1 + 1 + 4) / 4 = 10/4 = 2.5
-        """
-        expected = np.sqrt(2.5)
-        result = sstd(array_with_nan, ddof=0, nan=True)
-        assert_allclose(result, expected, rtol=1e-10)
-
-    def test_sstd_empty_array(self):
-        """Test sstd returns empty array when valid sample count <= ddof."""
-        arr = np.array([1.0])  # size=1
-        result = sstd(arr, ddof=1, nan=True)  # division by zero case
-        # The function returns empty array when ZeroDivisionError
-        assert result.size == 0 or np.isinf(result) or np.isnan(result)
-
-    def test_sstd_flat_nan_uses_lazy_numba_path_when_available(self, monkeypatch):
-        """Flattened NaN-aware sstd keeps its optional lazy Numba fast path."""
-        import astroimred._core.numeric as numeric
-
-        called = {}
-
-        def fake_get_kernel():
-            called["used"] = True
-
-            def kernel(arr, ddof):
-                return arr.size, 123.0 + ddof
-
-            return kernel
-
-        monkeypatch.setattr(numeric, "_numba_available", True)
-        monkeypatch.setattr(numeric, "_get_sstd_nan_1d_nb", fake_get_kernel)
-
-        result = numeric.sstd(np.array([1.0, 2.0, 3.0]), ddof=1, nan=True)
-
-        assert result == 124.0
-        assert called["used"] is True
 
 
 class TestSigmaClipper:
@@ -118,6 +41,42 @@ class TestSigmaClipper:
         # 0.0 should be removed
         assert len(result) < len(arr)
         assert 0.0 not in result
+
+    def test_sigma_clipper_1d_uses_imcombiners_mask(self, monkeypatch):
+        """Compatible 1-D clipping should use the optimized imcombiners kernel."""
+        import imcombiners.kernels as imck
+
+        calls = {}
+
+        def fake_mask(values, **kwargs):
+            calls["values"] = values.copy()
+            calls["kwargs"] = kwargs
+            return np.array([False, True, False])
+
+        monkeypatch.setattr(imck, "sigclip_mask_1d", fake_mask)
+
+        result = sigma_clipper(np.array([1.0, 100.0, 2.0]), sigma=2.0)
+
+        np.testing.assert_array_equal(result, [1.0, 2.0])
+        assert calls["kwargs"]["sigma"] == (2.0, 2.0)
+        assert calls["kwargs"]["stdfunc"] == "std"
+
+    def test_sigma_clipper_1d_supports_imcombiners_mad(self, monkeypatch):
+        """`stdfunc='mad'` should stay on the imcombiners fast path."""
+        import imcombiners.kernels as imck
+
+        calls = {}
+
+        def fake_mask(values, **kwargs):
+            calls["stdfunc"] = kwargs["stdfunc"]
+            return np.zeros(values.shape, dtype=bool)
+
+        monkeypatch.setattr(imck, "sigclip_mask_1d", fake_mask)
+
+        result = sigma_clipper(np.array([1.0, 2.0, 3.0]), stdfunc="mad")
+
+        np.testing.assert_array_equal(result, [1.0, 2.0, 3.0])
+        assert calls["stdfunc"] == "mad"
 
 
 class TestMagsum:

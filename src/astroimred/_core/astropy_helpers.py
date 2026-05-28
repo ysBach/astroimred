@@ -1,14 +1,11 @@
 """Small helpers built around Astropy units, modeling, and visualization."""
 
 import copy
-from collections.abc import Callable
-from typing import Literal
 
 import numpy as np
 from astropy import units as u
 from astropy.modeling.fitting import LevMarLSQFitter
 from astropy.modeling.functional_models import Gaussian2D
-from astropy.stats import sigma_clip
 from astropy.time import Time
 from astropy.visualization import (
     AsinhStretch,
@@ -24,14 +21,12 @@ from astropy.visualization import (
     SquaredStretch,
     ZScaleInterval,
 )
-from numpy.typing import ArrayLike
 
 from .numeric import normalize
 
 __all__ = [
     "as_quantity",
     "str_now",
-    "sigma_clipper",
     "parse_stretch",
     "parse_interval",
     "Gaussian2D_correct",
@@ -147,34 +142,6 @@ def str_now(
     if return_time:
         return fmt.format(timestr), now, dt
     return fmt.format(timestr)
-
-
-def sigma_clipper(
-    data: ArrayLike,
-    sigma: float = 3.0,
-    sigma_lower: float | None = None,
-    sigma_upper: float | None = None,
-    maxiters: int | None = 5,
-    cenfunc: Literal["median", "mean"] | Callable = "median",
-    stdfunc: Literal["std", "sstd", "mad_std"] | Callable = "std",
-) -> ArrayLike | tuple[ArrayLike, float, float] | tuple[ArrayLike, ...]:
-    """Return sigma-clipped data with clipped values removed.
-
-    This is a small wrapper around `astropy.stats.sigma_clip` with
-    ``masked=False`` hard-coded, so rejected elements are physically removed
-    from the returned ndarray. The default ``stdfunc`` ignores NaNs because
-    Astropy may inject NaNs into intermediate arrays during iterative clipping.
-    """
-    return sigma_clip(
-        data,
-        masked=False,
-        sigma=sigma,
-        sigma_lower=sigma_lower,
-        sigma_upper=sigma_upper,
-        maxiters=maxiters,
-        cenfunc=cenfunc,
-        stdfunc=stdfunc,
-    )
 
 
 def parse_stretch(

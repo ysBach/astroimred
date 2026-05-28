@@ -5,12 +5,13 @@ All expected values are analytically derived.
 """
 
 import astroapers as aap
+import imcombiners.kernels as imc_kernels
 import numpy as np
 import pytest
 from astropy.nddata import CCDData
 from numpy.testing import assert_allclose
 
-from astroimred._core.astropy_helpers import sigma_clipper
+from astroimred._core.numeric import sigma_clipper
 from astroimred.phot.background import mmm_dao, quick_sky_circ, sky_fit
 
 
@@ -230,6 +231,70 @@ class TestSkyFit:
 
         assert_allclose(result["msky"][0], 10.0, rtol=1e-10)
         assert result["nrej"][0] == 0
+
+    def test_sky_fit_default_clipper_uses_imcombiners_1d_mask(self, monkeypatch):
+        """The default sigma clipper uses imcombiners' 1-D rejection kernel."""
+        calls = []
+
+        def fake_sigclip_mask_1d(arr, **kwargs):
+            calls.append((arr.copy(), kwargs))
+            return np.zeros(arr.shape, dtype=bool)
+
+        monkeypatch.setattr(imc_kernels, "sigclip_mask_1d", fake_sigclip_mask_1d)
+
+        result = sky_fit(np.array([1.0, 2.0, 3.0]), annulus=None, method="mean")
+
+        assert_allclose(result["msky"][0], 2.0)
+        assert len(calls) == 1
+        assert calls[0][0].shape == (3,)
+        assert calls[0][1]["cenfunc"] == "median"
+
+    def test_sky_fit_large_default_clipper_uses_imcombiners_1d_mask(self, monkeypatch):
+        """Large 1-D sky samples should use the direct imcombiners 1-D kernel."""
+        calls = []
+
+        def fake_sigclip_mask_1d(arr, **kwargs):
+            calls.append(arr.shape)
+            return np.zeros(arr.shape, dtype=bool)
+
+        monkeypatch.setattr(imc_kernels, "sigclip_mask_1d", fake_sigclip_mask_1d)
+
+        sky = np.linspace(0.0, 1.0, 2048)
+        result = sky_fit(sky, annulus=None, method="mean")
+
+        assert_allclose(result["msky"][0], 0.5)
+        assert calls == [(2048,)]
+
+    def test_sky_fit_mean_uses_imcombiners_variance_mean(self, monkeypatch):
+        """Mean sky statistics should reuse imcombiners' one-pass var/mean."""
+        calls = {}
+
+        def fake_var_1d(values, *, ddof=0, return_mean=False, validate=True):
+            calls["ddof"] = ddof
+            calls["return_mean"] = return_mean
+            return np.nanvar(values, ddof=ddof), np.nanmean(values)
+
+        monkeypatch.setattr(imc_kernels, "var_1d", fake_var_1d)
+
+        result = sky_fit(
+            np.array([1.0, 2.0, 3.0]),
+            annulus=None,
+            method="mean",
+            sky_clipper=None,
+        )
+
+        assert_allclose(result["msky"][0], 2.0)
+        assert calls == {"ddof": 1, "return_mean": True}
+
+    @pytest.mark.parametrize("sky", [np.array([]), np.array([np.nan, np.nan])])
+    def test_sky_fit_default_clipper_preserves_empty_result(self, sky):
+        """Empty clipped samples should report empty statistics, not kernel errors."""
+        result = sky_fit(sky, annulus=None, method="mean")
+
+        assert np.isnan(result["msky"][0])
+        assert np.isnan(result["ssky"][0])
+        assert result["nsky"][0] == 0
+        assert result["nrej"][0] == sky.size
 
     def test_sky_fit_std_ddof(self, uniform_with_noise):
         """

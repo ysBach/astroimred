@@ -70,22 +70,6 @@ class TestWvg:
             numeric.wvg(val, err=err, ivar=err)
 
 
-class TestMinMaxMed1D:
-    """Tests for min_max_med_1d function."""
-
-    def test_odd_length(self):
-        """Odd-length arrays should return the central sorted value."""
-        arr = np.array([3, 1, 2])
-
-        assert numeric.min_max_med_1d(arr) == (1, 3, 2)
-
-    def test_even_length(self):
-        """Even-length arrays should average the two central sorted values."""
-        arr = np.array([4, 1, 2, 3])
-
-        assert numeric.min_max_med_1d(arr) == (1, 4, 2.5)
-
-
 class TestBinning:
     """Tests for n-D array binning."""
 

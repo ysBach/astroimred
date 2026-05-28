@@ -1,117 +1,26 @@
 """Standalone array math helpers."""
 
-import importlib.util
 from collections.abc import Callable
+from typing import Literal
 
+import imcombiners.kernels as imck
 import numpy as np
-
-_numba_available = importlib.util.find_spec("numba") is not None
-_sstd_nan_1d_nb = None
+from astropy.stats import sigma_clip
+from numpy.typing import ArrayLike
 
 __all__ = [
-    "sstd",
     "sqsum",
     "quad_sum",
     "magsum",
+    "sigma_clipper",
     "normalize",
     "wvg",
     "quantile_lh",
     "quantile_sigma",
-    "min_max_med_1d",
-    "mean_std_1d",
     "binning",
     "dB2epadu",
     "epadu2dB",
 ]
-
-
-def _get_sstd_nan_1d_nb():
-    global _sstd_nan_1d_nb
-    if _sstd_nan_1d_nb is None:
-        import numba as nb
-
-        @nb.njit
-        def _kernel(arr, ddof):
-            count = 0
-            mean = 0.0
-            m2 = 0.0
-            for value in arr:
-                if not np.isnan(value):
-                    count += 1
-                    delta = value - mean
-                    mean += delta / count
-                    m2 += delta * (value - mean)
-            if count <= ddof:
-                return count, np.nan
-            return count, np.sqrt(m2 / (count - ddof))
-
-        _sstd_nan_1d_nb = _kernel
-    return _sstd_nan_1d_nb
-
-
-def sstd(
-    a: np.ndarray,
-    ddof: int = 1,
-    axis: int | tuple[int, ...] | None = None,
-    nan: bool = False,
-    **kwargs: object,
-) -> np.ndarray:
-    """Return standard deviation, optionally ignoring NaNs.
-
-    ``nan=True`` ignores NaNs. For flattened arrays, a lazy optional Numba
-    kernel is used when available; axis-aware calculations use `numpy.nanstd`.
-
-    Notes
-    -----
-    Timing on MBP 14" [2024, macOS 26.4.1,
-    M4Pro(8P+4E/G20c/N16c/48G)], 2026-05-27:
-
-    >>> arr = np.random.default_rng(100).normal(size=100)
-    >>> arr[::97] = np.nan
-    >>> %timeit air.sstd(arr, nan=True, ddof=1)
-    >>> # 0.89 µs per loop
-    >>> %timeit np.nanstd(arr, ddof=1)
-    >>> # 10.2 µs per loop
-
-    >>> arr = np.random.default_rng(10_000).normal(size=10_000)
-    >>> arr[::97] = np.nan
-    >>> %timeit air.sstd(arr, nan=True, ddof=1)
-    >>> # 35.0 µs per loop
-    >>> %timeit np.nanstd(arr, ddof=1)
-    >>> # 28.0 µs per loop
-
-    >>> stack = np.random.default_rng(20).normal(size=(20, 512, 512))
-    >>> stack[0, ::31, ::37] = np.nan
-    >>> %timeit air.sstd(stack, nan=True, axis=0, ddof=1)
-    >>> # 13.0 ms per loop
-    >>> %timeit np.nanstd(stack, axis=0, ddof=1)
-    >>> # 10.6 ms per loop
-    """
-    if not nan:
-        return np.std(a, ddof=ddof, axis=axis, **kwargs)
-
-    arr = np.asarray(a)
-    if axis is None and _numba_available:
-        arr_1d = np.ravel(arr)
-        if not np.issubdtype(arr_1d.dtype, np.inexact):
-            arr_1d = arr_1d.astype(float)
-        count, std = _get_sstd_nan_1d_nb()(arr_1d, ddof)
-        if count <= ddof:
-            return np.array([], dtype=float)
-        return std
-
-    if axis is None:
-        with np.errstate(invalid="ignore", divide="ignore"):
-            std = np.nanstd(arr, ddof=ddof, **kwargs)
-        if np.isnan(std) and np.count_nonzero(~np.isnan(arr)) <= ddof:
-            return np.array([], dtype=float)
-        return std
-
-    count = np.sum(~np.isnan(arr), axis=axis)
-    if np.any(np.asarray(count) <= ddof):
-        return np.array([], dtype=float)
-
-    return np.nanstd(arr, ddof=ddof, axis=axis, **kwargs)
 
 
 def sqsum(*args: object) -> object:
@@ -130,6 +39,61 @@ def quad_sum(*args: object) -> object:
 def magsum(*args: object) -> object:
     """Return the flux-equivalent sum of astronomical magnitudes."""
     return -2.5 * np.log10(np.sum(10 ** (-0.4 * np.array(args))))
+
+
+def sigma_clipper(
+    data: ArrayLike,
+    sigma: float = 3.0,
+    sigma_lower: float | None = None,
+    sigma_upper: float | None = None,
+    maxiters: int | None = 5,
+    cenfunc: Literal["median", "mean"] | Callable = "median",
+    stdfunc: Literal["std", "mad_std", "mad"] | Callable = "std",
+) -> ArrayLike | tuple[ArrayLike, float, float] | tuple[ArrayLike, ...]:
+    """Return sigma-clipped data with clipped values removed.
+
+    Compatible 1-D calls use `imcombiners.kernels.sigclip_mask_1d`; other calls
+    fall back to `astropy.stats.sigma_clip` with ``masked=False`` hard-coded, so
+    rejected elements are physically removed from the returned ndarray. The
+    default ``stdfunc`` ignores NaNs because Astropy may inject NaNs into
+    intermediate arrays during iterative clipping. For 1-D robust clipping,
+    prefer ``stdfunc="mad"`` to use imcombiners' MAD spread estimator.
+    """
+    arr = np.asarray(data)
+    if arr.ndim == 1 and arr.size == 0:
+        return arr[~np.isnan(arr)]
+    if (
+        arr.ndim == 1
+        and maxiters is not None
+        and isinstance(cenfunc, str)
+        and cenfunc in {"median", "mean"}
+        and isinstance(stdfunc, str)
+        and stdfunc in {"std", "mad"}
+    ):
+        sigma_pair = (
+            float(sigma if sigma_lower is None else sigma_lower),
+            float(sigma if sigma_upper is None else sigma_upper),
+        )
+        mask_rej = imck.sigclip_mask_1d(
+            np.ascontiguousarray(arr),
+            sigma=sigma_pair,
+            maxiters=int(maxiters),
+            cenfunc=cenfunc,
+            stdfunc=stdfunc,
+            nkeep=0,
+        )
+        return arr[~mask_rej]
+
+    return sigma_clip(
+        data,
+        masked=False,
+        sigma=sigma,
+        sigma_lower=sigma_lower,
+        sigma_upper=sigma_upper,
+        maxiters=maxiters,
+        cenfunc=cenfunc,
+        stdfunc="mad_std" if stdfunc == "mad" else stdfunc,
+    )
 
 
 def normalize(
@@ -383,51 +347,6 @@ def quantile_sigma(
         hinterp=hinterp,
     )
     return np.abs(upp - low) / 2
-
-
-def min_max_med_1d(arr: np.ndarray) -> tuple[float, float, float]:
-    """Return the minimum, maximum, and median of a 1-D array."""
-    arr = np.asarray(arr)
-    if arr.size < 1000:
-        _a = np.sort(arr)
-        mid = _a.size // 2
-        med = _a[mid] if _a.size % 2 else 0.5 * (_a[mid] + _a[mid - 1])
-        return _a[0], _a[-1], med
-    else:
-        return np.min(arr), np.max(arr), np.median(arr)
-
-
-def mean_std_1d(
-    arr: np.ndarray,
-    ddof: int = 0,
-    std: bool = True,
-    var: bool = False,
-) -> tuple[float, ...]:
-    """Return mean with standard deviation and/or variance.
-
-    Parameters
-    ----------
-    arr : array-like
-        Input values.
-    ddof : int, optional
-        Delta degrees of freedom for variance normalization.
-    std, var : bool, optional
-        Select whether to include standard deviation and/or variance.
-    """
-    arr = np.asarray(arr)
-    sum_a = np.sum(arr)
-    sqsum = np.sum(arr**2)
-    inv_n = 1.0 / arr.size
-    inv_d = 1.0 / (arr.size - ddof) if ddof > 0 else inv_n
-    mean = sum_a * inv_n
-    var_value = sqsum * inv_d - mean * sum_a * inv_d
-    if var:
-        if std:
-            return mean, np.sqrt(var_value), var_value
-        return mean, var_value
-    if std:
-        return mean, np.sqrt(var_value)
-    raise ValueError("At least one of `std` or `var` must be True.")
 
 
 def _validate_binning_factor(factor, axis):

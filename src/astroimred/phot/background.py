@@ -1,11 +1,12 @@
 from collections.abc import Callable
 
 import astroapers as aap
+import imcombiners.kernels as imck
 import numpy as np
 from astropy.nddata import CCDData
 from astropy.table import Table
 
-from astroimred._core.astropy_helpers import sigma_clipper
+from astroimred._core.numeric import sigma_clipper
 
 __all__ = ["quick_sky_circ", "sky_fit", "mmm_dao"]
 
@@ -74,7 +75,7 @@ def sky_fit(
           * ``"MMM"``  == (med_factor, mean_factor) = (3, 2)
 
         where ``msky = (med_factor * med) - (mean_factor * mean)``.
-        For the ``"sex"`` method, if (mean - median)/std < 0.3, median is used
+        For the ``"sex"`` method, if (mean - median)/std > 0.3, median is used
         instead of the above formula, which mimics the SExtractor's way.
         If a callable is given, it should have the signature
         ``func(skyarr, ssky) -> msky`` where `skyarr` is the 1-d array of sky
@@ -88,13 +89,13 @@ def sky_fit(
         ``func(skyarr, **kwargs) -> clipped_skyarr`` where `skyarr` is the 1-d
         array of sky values. The returned array must be a plain ndarray with
         no NaN values — clipped elements should be removed, not replaced with
-        NaN — because `_sky_fit` uses ``np.std``/``np.mean``/``np.median``
-        directly on the result. `~astroimred._core.astropy_helpers.sigma_clipper` (the
-        default) satisfies this by wrapping ``astropy.stats.sigma_clip`` with
-        ``masked=False``, which physically removes clipped values.
+        NaN — because `_sky_fit` passes the result to 1-D `imcombiners`
+        statistics kernels. `~astroimred._core.numeric.sigma_clipper` (the
+        default) removes clipped values and uses `imcombiners` for compatible
+        1-D calls.
         If `None`, no clipping will be applied
         (i.e., ``lambda x: x[~np.isnan(x)]`` is used).
-        The default is `astroimred._core.astropy_helpers.sigma_clipper`.
+        The default is `astroimred._core.numeric.sigma_clipper`.
 
     std_ddof : int, optional
         The "delta-degrees of freedom" for sky standard deviation calculation.
@@ -204,42 +205,51 @@ def _sky_fit(
     std_ddof=1,
     **kwargs,
 ):
-    sky_clipped = sky_clipper(sky, **kwargs)
+    sky_clipped = _clip_sky_values(sky, sky_clipper, kwargs)
+    if sky_clipped.size == 0:
+        return np.nan, np.nan, 0, sky.size
 
     if isinstance(method, str):
         method = method.lower()
+        var, mean = imck.var_1d(sky_clipped, ddof=std_ddof, return_mean=True)
+        std = np.sqrt(var)
+        if method in {"sex", "iraf", "mmm"}:
+            med = imck.median_1d(sky_clipped)
         if method == "sex":
-            std = np.std(sky_clipped, ddof=std_ddof)
-            mean = np.mean(sky_clipped)
-            med = np.median(sky_clipped)
-            msky = med if (mean - med) / std > 0.3 else (2.5 * med) - (1.5 * mean)
+            use_median = std > 0.0 and (mean - med) / std > 0.3
+            msky = med if use_median else (2.5 * med) - (1.5 * mean)
         elif method == "median":
-            std = np.std(sky_clipped, ddof=std_ddof)
-            msky = np.median(sky_clipped)
+            msky = imck.median_1d(sky_clipped)
         elif method == "mean":
-            std = np.std(sky_clipped, ddof=std_ddof)
-            msky = np.mean(sky_clipped)
+            msky = mean
         elif method == "iraf":
-            std = np.std(sky_clipped, ddof=std_ddof)
-            mean = np.mean(sky_clipped)
-            med = np.median(sky_clipped)
             msky = mean if (mean < med) else 3 * med - 2 * mean
         elif method == "mmm":
-            std = np.std(sky_clipped, ddof=std_ddof)
-            mean = np.mean(sky_clipped)
-            med = np.median(sky_clipped)
             msky = 3 * med - 2 * mean
         else:
             raise ValueError(f"{method=} not understood")
 
     else:
-        std = np.std(sky_clipped, ddof=std_ddof)
+        var = imck.var_1d(sky_clipped, ddof=std_ddof)
+        std = np.sqrt(var)
         msky = method(sky_clipped, std)
 
     nsky = sky_clipped.size
     nrej = sky.size - nsky
 
     return msky, std, nsky, nrej
+
+
+def _clip_sky_values(
+    sky: np.ndarray,
+    sky_clipper: Callable[..., np.ndarray] | None,
+    kwargs: dict,
+) -> np.ndarray:
+    """Return clipped sky values."""
+    sky = np.asarray(sky).reshape(-1)
+    if sky_clipper is None:
+        return sky[~np.isnan(sky)]
+    return sky_clipper(sky, **kwargs)
 
 
 def mmm_dao(
