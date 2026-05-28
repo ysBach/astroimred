@@ -60,18 +60,56 @@ def sstd(
 
     ``nan=True`` ignores NaNs. For flattened arrays, a lazy optional Numba
     kernel is used when available; axis-aware calculations use `numpy.nanstd`.
+
+    Notes
+    -----
+    Timing on MBP 14" [2024, macOS 26.4.1,
+    M4Pro(8P+4E/G20c/N16c/48G)], 2026-05-27:
+
+    >>> arr = np.random.default_rng(100).normal(size=100)
+    >>> arr[::97] = np.nan
+    >>> %timeit air.sstd(arr, nan=True, ddof=1)
+    >>> # 0.89 µs per loop
+    >>> %timeit np.nanstd(arr, ddof=1)
+    >>> # 10.2 µs per loop
+
+    >>> arr = np.random.default_rng(10_000).normal(size=10_000)
+    >>> arr[::97] = np.nan
+    >>> %timeit air.sstd(arr, nan=True, ddof=1)
+    >>> # 35.0 µs per loop
+    >>> %timeit np.nanstd(arr, ddof=1)
+    >>> # 28.0 µs per loop
+
+    >>> stack = np.random.default_rng(20).normal(size=(20, 512, 512))
+    >>> stack[0, ::31, ::37] = np.nan
+    >>> %timeit air.sstd(stack, nan=True, axis=0, ddof=1)
+    >>> # 13.0 ms per loop
+    >>> %timeit np.nanstd(stack, axis=0, ddof=1)
+    >>> # 10.6 ms per loop
     """
     if not nan:
         return np.std(a, ddof=ddof, axis=axis, **kwargs)
 
     arr = np.asarray(a)
+    if axis is None and _numba_available:
+        arr_1d = np.ravel(arr)
+        if not np.issubdtype(arr_1d.dtype, np.inexact):
+            arr_1d = arr_1d.astype(float)
+        count, std = _get_sstd_nan_1d_nb()(arr_1d, ddof)
+        if count <= ddof:
+            return np.array([], dtype=float)
+        return std
+
+    if axis is None:
+        with np.errstate(invalid="ignore", divide="ignore"):
+            std = np.nanstd(arr, ddof=ddof, **kwargs)
+        if np.isnan(std) and np.count_nonzero(~np.isnan(arr)) <= ddof:
+            return np.array([], dtype=float)
+        return std
+
     count = np.sum(~np.isnan(arr), axis=axis)
     if np.any(np.asarray(count) <= ddof):
         return np.array([], dtype=float)
-
-    if axis is None and _numba_available:
-        _, std = _get_sstd_nan_1d_nb()(np.ravel(arr).astype(float), ddof)
-        return std
 
     return np.nanstd(arr, ddof=ddof, axis=axis, **kwargs)
 
@@ -458,29 +496,6 @@ def binning(
         divisible by the binning factors.
         Default: `False`.
 
-    Notes
-    -----
-    This kind of binning is ~ 20-30 to upto 10^5 times faster than
-    astropy.nddata's block_reduce:
-
-
-    >>> from astropy.nddata.blocks import block_reduce
-    >>> import astroimred as air
-    >>> from astropy.nddata import CCDData
-    >>> import numpy as np
-    >>> ccd = CCDData(data=np.arange(1000).reshape(20, 50), unit='adu')
-    >>> bin_kw = dict(factors=(5, 5), binfunc=np.sum, trim_end=True)
-    >>> ccd_kw = dict(factors=(5, 5), binfunc=np.sum, trim_end=True)
-    >>> %timeit air.binning(ccd.data, **bin_kw)
-    >>> # 10.9 +- 0.216 us (7 runs, 100000 loops each)
-    >>> %timeit air.bin_ccd(ccd, **ccd_kw, update_header=False)
-    >>> # 32.9 µs +- 878 ns per loop (7 runs, 10000 loops each)
-    >>> %timeit -r 1 -n 1 block_reduce(ccd, block_size=5)
-    >>> # 518 ms, 2.13 ms, 250 us, 252 us, 257 us, 267 us
-    >>> # 5.e+5   ...      ...     ...     ...     27  -- times slower
-    >>> # some strange caching happens?
-    Tested on MBP 15" [2018, macOS 10.14.6, i7-8850H (2.6 GHz; 6-core), RAM 16
-    GB (2400MHz DDR4), Radeon Pro 560X (4GB)]
     """
     arr = np.asarray(arr)
     if arr.size == 0:

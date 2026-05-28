@@ -82,6 +82,19 @@ def _update_binning_header(header, factors):
         )
 
 
+def _ccd_with_replaced_data(ccd: CCDData, data: np.ndarray) -> CCDData:
+    if ccd.mask is not None or ccd.uncertainty is not None:
+        nccd = ccd.copy()
+        nccd.data = data
+        return nccd
+
+    kwargs = {"unit": ccd.unit, "header": ccd.header.copy()}
+    wcs = getattr(ccd, "wcs", None)
+    if wcs is not None:
+        kwargs["wcs"] = deepcopy(wcs)
+    return CCDData(data, **kwargs)
+
+
 def CCDData_astype(
     ccd: CCDData,
     dtype: str | np.dtype = "float32",
@@ -751,18 +764,19 @@ def bin_ccd(
     >>> ccd = CCDData(data=np.arange(1000).reshape(20, 50), unit='adu')
     >>> bin_kw = dict(factors=(5, 5), binfunc=np.sum, trim_end=True)
     >>> ccd_kw = dict(factors=(5, 5), binfunc=np.sum, trim_end=True)
+
+    on MBP 14" [2024, macOS 26.4.1,
+    M4Pro(8P+4E/G20c/N16c/48G)], 2026-05-27:
+
     >>> %timeit air.binning(ccd.data, **bin_kw)
-    >>> # 10.9 +- 0.216 us (7 runs, 100000 loops each)
+    >>> # 8.11 µs ± 0.2 µs per loop (7 runs, 30000 loops each)
     >>> %timeit air.bin_ccd(ccd, **ccd_kw, update_header=False)
-    >>> # 32.9 µs +- 878 ns per loop (7 runs, 10000 loops each)
-    >>> %timeit -r 1 -n 1 block_reduce(ccd, block_size=5)
-    >>> # 518 ms, 2.13 ms, 250 us, 252 us, 257 us, 267 us
-    >>> # 5.e+5   ...      ...     ...     ...     27  -- times slower
-    >>> # some strange caching happens?
-    Tested on MBP 15" [2018, macOS 10.14.6, i7-8850H (2.6 GHz; 6-core), RAM 16
-    GB (2400MHz DDR4), Radeon Pro 560X (4GB)]
+    >>> # 11.8 µs ± 0.3 µs per loop (7 runs, 30000 loops each)
+    >>> %timeit block_reduce(ccd, block_size=5)
+    >>> # 15.3 µs ± 0.4 µs per loop (7 runs, 30000 loops each)
     """
-    _t_start = Time.now()
+    if update_header:
+        _t_start = Time.now()
 
     if not isinstance(ccd, CCDData):
         raise TypeError("ccd must be CCDData object.")
@@ -772,14 +786,17 @@ def bin_ccd(
     if all(factor == 1 for factor in header_factors):
         return ccd
 
-    _ccd = ccd.copy() if copy else ccd
-
-    _ccd.data = binning(
-        _ccd.data,
+    binned_data = binning(
+        ccd.data,
         factors=factors,
         binfunc=binfunc,
         trim_end=trim_end,
     )
+    if copy:
+        _ccd = _ccd_with_replaced_data(ccd, binned_data)
+    else:
+        _ccd = ccd
+        _ccd.data = binned_data
     if update_header:
         _ccd.header["BINFUNC"] = (binfunc.__name__, "The function used for binning.")
         _update_binning_header(_ccd.header, header_factors)
