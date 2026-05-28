@@ -117,6 +117,24 @@ class TestBinning:
         expected = arr.reshape(2, 3, 4, 2).sum(axis=(1, 3))
         np.testing.assert_array_equal(out, expected)
 
+    def test_median_binning_uses_imcombiners_kernel(self, monkeypatch):
+        """Median binning should dispatch through imcombiners' stack median."""
+        import imcombiners.kernels as imck
+
+        calls = {}
+
+        def fake_median(stack, *, validate=True):
+            calls["shape"] = stack.shape
+            return np.full(stack.shape[1:], 7.0)
+
+        monkeypatch.setattr(imck, "median", fake_median)
+
+        arr = np.arange(16.0).reshape(4, 4)
+        out = numeric.binning(arr, factors=(2, 2), order_xyz=False, binfunc=np.median)
+
+        assert calls["shape"] == (4, 2, 2)
+        np.testing.assert_array_equal(out, np.full((2, 2), 7.0))
+
     def test_nd_binning_preserves_leading_axis(self):
         """n-D binning should work when leading axes have factor one."""
         arr = np.arange(4 * 6 * 8).reshape(4, 6, 8)

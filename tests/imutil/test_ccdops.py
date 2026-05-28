@@ -133,3 +133,40 @@ class TestCcdUtils:
         assert _header_value(out.header, "XBINNING") == 2
         assert _header_value(out.header, "YBINNING") == 3
         assert _header_value(out.header, "ZBINNING") == 4
+
+    def test_bin_ccd_without_header_update_skips_timestamp(self, monkeypatch):
+        """No-header binning should avoid unused FITS timestamp work."""
+        ccd = CCDData(np.arange(6 * 8).reshape(6, 8), unit="adu")
+
+        def fail_time_now():
+            raise AssertionError("Time.now should not be called")
+
+        monkeypatch.setattr(ccdops.Time, "now", fail_time_now)
+
+        out = ccdops.bin_ccd(
+            ccd,
+            factors=(2, 3),
+            binfunc=np.sum,
+            update_header=False,
+        )
+
+        assert out.shape == (2, 4)
+
+    def test_bin_ccd_simple_input_avoids_full_ccd_copy(self, monkeypatch):
+        """Simple CCDData binning should not copy data that will be discarded."""
+        ccd = CCDData(np.arange(6 * 8).reshape(6, 8), unit="adu")
+
+        def fail_copy(self):
+            raise AssertionError("CCDData.copy should not be called")
+
+        monkeypatch.setattr(CCDData, "copy", fail_copy)
+
+        out = ccdops.bin_ccd(
+            ccd,
+            factors=(2, 3),
+            binfunc=np.sum,
+            update_header=False,
+        )
+
+        assert out.shape == (2, 4)
+        assert out.unit == ccd.unit

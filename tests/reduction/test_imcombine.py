@@ -1,11 +1,13 @@
+import inspect
 import warnings
 
+import imcombiners as imc
 import numpy as np
 import pytest
 from astropy.io import fits
 from astropy.nddata import CCDData
 
-from astroimred.imutil.imcombine import imcombine, ndcombine
+from astroimred.imutil.imcombine import imcombine
 
 
 def _write_fits(path, data, header=None):
@@ -153,7 +155,7 @@ def _assert_imcombine_full(result, expected):
 
 
 class TestNDCombine:
-    """Tests for `~astroimred.imutil.ndcombine` core algorithmic logic."""
+    """Tests for the upstream `imcombiners.ndcombine` core algorithmic logic."""
 
     def test_basic_average(self):
         """Test simple average combination."""
@@ -164,7 +166,7 @@ class TestNDCombine:
         arr[1] += 2
         arr[2] += 3
 
-        combined = ndcombine(arr, combine="average")
+        combined = imc.ndcombine(arr, combine="average")
         np.testing.assert_allclose(combined, 2.0, rtol=1e-6)
 
     def test_basic_median(self):
@@ -175,7 +177,7 @@ class TestNDCombine:
         arr[2] += 100
 
         # Median is 10.
-        combined = ndcombine(arr, combine="median")
+        combined = imc.ndcombine(arr, combine="median")
         np.testing.assert_allclose(combined, 10.0, rtol=1e-6)
 
     def test_basic_lmedian(self):
@@ -186,7 +188,7 @@ class TestNDCombine:
         arr[1] += 2
         arr[2] += 3
         arr[3] += 4
-        combined = ndcombine(arr, combine="lmedian")
+        combined = imc.ndcombine(arr, combine="lmedian")
         np.testing.assert_allclose(combined, 2.0, rtol=1e-6)
 
     def test_sigma_clip(self):
@@ -203,8 +205,8 @@ class TestNDCombine:
         arr[4] = 1000.0
 
         # combine="average", reject="sigclip", sigma=[3, 3]
-        combined = ndcombine(
-            arr, combine="average", reject="sigclip", sigma=[1.0, 1.0], verbose=False
+        combined = imc.ndcombine(
+            arr, combine="average", reject="sigclip", sigma=[1.0, 1.0]
         )
 
         # Should reject 1000.0 and average the rest (10.0).
@@ -214,12 +216,14 @@ class TestNDCombine:
         """Test minmax rejection."""
         # 0, 10, 10, 10, 100
         arr = np.array([0, 10, 10, 10, 100])
-        # Reshape to (N, 1, 1) needed for ndcombine?
-        # ndcombine expects (N, y, x).
+        # Reshape to (N, 1, 1) needed for imc.ndcombine.
+        # imc.ndcombine expects (N, y, x).
         arr = arr[:, None, None] * np.ones((5, 2, 2))
 
         # nlow=1, nhigh=1 -> reject lowest and highest.
-        combined = ndcombine(arr, combine="average", reject="minmax", n_minmax=[1, 1])
+        combined = imc.ndcombine(
+            arr, combine="average", reject="minmax", n_minmax=[1, 1]
+        )
 
         # Remaining: 10, 10, 10 -> Average 10.
         np.testing.assert_allclose(combined, 10.0, rtol=1e-6)
@@ -229,7 +233,7 @@ class TestNDCombine:
         yy, xx = np.mgrid[:2, :3]
         base = yy * 10.0 + xx
         arr = np.stack([base + value for value in [10.0, 10.0, 10.0, 1000.0]])
-        comb, mask_rej, mask_thresh, std, low, upp, nit, output_flags = ndcombine(
+        comb, mask_rej, mask_thresh, std, low, upp, nit, output_flags = imc.ndcombine(
             arr,
             combine="average",
             reject="sigclip",
@@ -257,6 +261,10 @@ class TestNDCombine:
 
 class TestImCombine:
     """Tests for `~astroimred.imutil.imcombine` wrapper with FITS files."""
+
+    def test_imcombine_has_no_logfile_parameter(self):
+        """Runtime reporting should go through logger, not CSV logfile plumbing."""
+        assert "logfile" not in inspect.signature(imcombine).parameters
 
     def test_zero_scale_stats_use_imc_resolver_without_mutating_kwargs(self, tmp_path):
         paths = []
@@ -367,6 +375,157 @@ class TestImCombine:
                 np.testing.assert_array_equal(chunked[key], full[key])
         assert chunked["nit"] is None
         assert chunked["output_flags"] is None
+
+    def test_chunked_offsets_use_only_active_planes(self, tmp_path, monkeypatch):
+        """Offset chunks should pass only overlapping planes to ndcombine."""
+        paths = []
+        yy, xx = np.mgrid[:4, :5]
+        images = [yy * 10.0 + xx + i * 100.0 for i in range(3)]
+        for i, image in enumerate(images):
+            p = tmp_path / f"sparse_offset_{i}.fits"
+            _write_fits(p, image)
+            paths.append(p)
+
+        seen_stack_depths = []
+        from astroimred.imutil import imcombine as imcombine_module
+
+        original_ndcombine = imcombine_module.imc.ndcombine
+
+        def recording_ndcombine(arr, *args, **kwargs):
+            seen_stack_depths.append(arr.shape[0])
+            return original_ndcombine(arr, *args, **kwargs)
+
+        monkeypatch.setattr(imcombine_module.imc, "ndcombine", recording_ndcombine)
+
+        raw_offsets = np.array([[0, 0], [0, 80], [20, 160]])
+        result = imcombine(
+            paths,
+            offsets=raw_offsets,
+            combine="average",
+            reject="none",
+            full=True,
+            return_dict=True,
+            memlimit=900,
+        )
+
+        expected = _expected_no_reject(images, raw_offsets, combine="average")
+        _assert_imcombine_full(result, expected)
+        assert seen_stack_depths
+        assert max(seen_stack_depths) < len(paths)
+
+    def test_chunked_offsets_keep_global_zero_scale_reference(self, tmp_path):
+        """Compact active chunks must still rebase zero/scale to image 0."""
+        yy, xx = np.mgrid[:4, :5]
+        sky = yy * 10.0 + xx
+        raw_offsets = np.array([[0, 0], [0, 80], [20, 160]])
+        zeros = np.array([100.0, 10.0, 20.0])
+        scales = np.array([5.0, 2.0, 4.0])
+        images = [scales[i] * sky + zeros[i] for i in range(3)]
+        paths = []
+        for i, image in enumerate(images):
+            p = tmp_path / f"global_zs_{i}.fits"
+            _write_fits(p, image)
+            paths.append(p)
+
+        result = imcombine(
+            paths,
+            offsets=raw_offsets,
+            zero=zeros,
+            scale=scales,
+            combine="average",
+            reject="none",
+            full=True,
+            return_dict=True,
+            memlimit=900,
+        )
+
+        expected = _expected_no_reject(
+            images, raw_offsets, combine="average", zero=zeros, scale=scales
+        )
+        _assert_imcombine_full(result, expected)
+
+    def test_chunked_sparse_offsets_rejection_matches_full_stack(self, tmp_path):
+        """Compact active chunks must map rejection diagnostics to full image axis."""
+        paths = []
+        yy, xx = np.mgrid[:5, :6]
+        images = [yy * 10.0 + xx + value for value in [0.0, 10.0, 100.0, 110.0]]
+        for i, image in enumerate(images):
+            p = tmp_path / f"sparse_reject_{i}.fits"
+            _write_fits(p, image)
+            paths.append(p)
+
+        raw_offsets = np.array([[0, 0], [0, 2], [0, 80], [0, 82]])
+        common = {
+            "offsets": raw_offsets,
+            "combine": "average",
+            "reject": "minmax",
+            "n_minmax": [0, 1],
+            "full": True,
+            "return_dict": True,
+            "dtype": "float32",
+        }
+        full = imcombine(paths, memlimit=1e9, **common)
+        chunked = imcombine(paths, memlimit=900, **common)
+
+        _assert_imcombine_full(
+            chunked,
+            {
+                "comb": full["comb"].data,
+                "std": full["std"],
+                "low": full["low"],
+                "upp": full["upp"],
+                "mask_total": full["mask_total"],
+                "mask_rej": full["mask_rej"],
+                "mask_thresh": full["mask_thresh"],
+                "nit": full["nit"],
+                "output_flags": full["output_flags"],
+                "out_shape": full["comb"].data.shape,
+            },
+        )
+
+    def test_chunked_user_offsets_plan_shapes_from_headers(self, tmp_path, monkeypatch):
+        """User-offset planning should not full-read FITS data for shapes."""
+        paths = []
+        yy, xx = np.mgrid[:4, :5]
+        for i in range(3):
+            p = tmp_path / f"header_shape_{i}.fits"
+            _write_fits(p, yy * 10.0 + xx + i)
+            paths.append(p)
+
+        from astroimred.imutil import _util_fits
+
+        full_shape_loads = 0
+        original_parse = _util_fits._parse_imc_data_header
+
+        def recording_parse(
+            item,
+            extension,
+            parse_data=True,
+            parse_header=True,
+            copy=True,
+        ):
+            nonlocal full_shape_loads
+            if parse_data and not parse_header:
+                full_shape_loads += 1
+            return original_parse(
+                item,
+                extension,
+                parse_data=parse_data,
+                parse_header=parse_header,
+                copy=copy,
+            )
+
+        monkeypatch.setattr(_util_fits, "_parse_imc_data_header", recording_parse)
+
+        imcombine(
+            paths,
+            offsets=np.array([[0, 0], [0, 80], [20, 160]]),
+            combine="average",
+            reject="none",
+            memlimit=900,
+        )
+
+        assert full_shape_loads == 0
 
     def test_user_offsets_zero_scale_average_aux_analytical(self, tmp_path):
         """User offsets plus zero/scale should match direct pixel math."""

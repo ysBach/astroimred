@@ -21,6 +21,7 @@ def test_comb_command_help():
     assert "astroimred.reduction" in result.output
     assert "--combine" in result.output
     assert "--reject" in result.output
+    assert "--logfile" not in result.output
 
 
 def test_main_help_uses_astroimred_reduction_and_imred_subcommands():

@@ -34,12 +34,11 @@ def test_top_level_lightweight_exports():
 def test_heavy_tools_importable_directly():
     """Heavy image tools are importable from their own modules."""
     from astroimred.imutil.imarith import imarith
-    from astroimred.imutil.imcombine import imcombine, ndcombine
+    from astroimred.imutil.imcombine import imcombine
     from astroimred.imutil.imcopy import imcopy
     from astroimred.imutil.imsmooth import smooth_med
 
     assert callable(imcombine)
-    assert callable(ndcombine)
     assert callable(imarith)
     assert callable(imcopy)
     assert callable(smooth_med)
