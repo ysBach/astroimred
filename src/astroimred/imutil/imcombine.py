@@ -350,9 +350,10 @@ def _ndckw_for_active_chunk(
         reference_to_0th=bool(ndc_kw["scale_to_0th"]),
         operation="divide",
     )
-    chunk_kw["weight"] = np.asarray(ndc_kw["weight"], dtype=float).reshape(-1)[
-        active_indices
-    ]
+    if ndc_kw["weight"] is not None:
+        chunk_kw["weight"] = np.asarray(ndc_kw["weight"], dtype=float).reshape(-1)[
+            active_indices
+        ]
     chunk_kw["zero_to_0th"] = False
     chunk_kw["scale_to_0th"] = False
     return chunk_kw
@@ -563,7 +564,9 @@ def imcombine(
         "reject": rejname,
         "scale": scales,  # it is scales , NOT scale , as it was updated above.
         "zero": zeros,  # it is zeros  , NOT zero  , as it was updated above.
-        "weight": weights,  # it is weights, NOT weight, as it was updated above.
+        # `weights` are currently recorded in output headers, but astroimred has
+        # not implemented weighted imcombine semantics yet.
+        "weight": None,
         "zero_to_0th": zero_to_0th,
         "scale_to_0th": scale_to_0th,
         "scale_sigclip_kwargs": scale_kw,

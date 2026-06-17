@@ -1,14 +1,58 @@
 from collections.abc import Callable
 
 import astroapers as aap
-import imcombiners.kernels as imck
 import numpy as np
+import reducers.lowlevel as rdl
 from astropy.nddata import CCDData
 from astropy.table import Table
 
-from astroimred._core.numeric import sigma_clipper
+from astroimred._core.numeric import _as_reducer_1d_values, sigma_clipper
 
-__all__ = ["quick_sky_circ", "sky_fit", "mmm_dao"]
+__all__ = ["annul2values", "quick_sky_circ", "sky_fit", "mmm_dao"]
+
+
+def _data_and_mask(
+    ccd: CCDData | np.ndarray,
+    mask: np.ndarray | None,
+) -> tuple[np.ndarray, np.ndarray | None]:
+    """Return image data and the combined CCD/external mask."""
+    if isinstance(ccd, CCDData):
+        arr = np.asarray(ccd.data)
+        ccd_mask = ccd.mask
+        base_mask = None if ccd_mask is None else np.asarray(ccd_mask, dtype=bool)
+    else:
+        arr = np.asarray(ccd)
+        base_mask = None
+
+    if mask is not None:
+        mask = np.asarray(mask, dtype=bool)
+        base_mask = mask if base_mask is None else (base_mask | mask)
+    return arr, base_mask
+
+
+def annul2values(
+    ccd: CCDData | np.ndarray,
+    annulus,
+    mask: np.ndarray | None = None,
+    *,
+    flat: bool = False,
+) -> list[np.ndarray] | tuple[np.ndarray, np.ndarray]:
+    """Return center-selected annulus values using the current astroapers API.
+
+    Parameters
+    ----------
+    ccd : `~astropy.nddata.CCDData` or `~numpy.ndarray`
+        Image data to sample.
+    annulus : astroapers aperture-like
+        Object exposing ``sampled_values(data, mask=..., flat=...)``.
+    mask : `~numpy.ndarray`, optional
+        Additional boolean mask where `True` pixels are excluded.
+    flat : bool, optional
+        If `True`, return ``(flat_values, offsets)`` as provided by
+        `astroapers`.
+    """
+    arr, base_mask = _data_and_mask(ccd, mask)
+    return annulus.sampled_values(arr, mask=base_mask, flat=flat)
 
 
 def quick_sky_circ(
@@ -89,10 +133,10 @@ def sky_fit(
         ``func(skyarr, **kwargs) -> clipped_skyarr`` where `skyarr` is the 1-d
         array of sky values. The returned array must be a plain ndarray with
         no NaN values — clipped elements should be removed, not replaced with
-        NaN — because `_sky_fit` passes the result to 1-D `imcombiners`
-        statistics kernels. `~astroimred._core.numeric.sigma_clipper` (the
-        default) removes clipped values and uses `imcombiners` for compatible
-        1-D calls.
+        NaN — because `_sky_fit` passes the result to `reducers` statistics
+        kernels. `~astroimred._core.numeric.sigma_clipper` (the default)
+        removes clipped values and uses `imcombiners` rejection kernels for
+        compatible 1-D calls.
         If `None`, no clipping will be applied
         (i.e., ``lambda x: x[~np.isnan(x)]`` is used).
         The default is `astroimred._core.numeric.sigma_clipper`.
@@ -152,23 +196,12 @@ def sky_fit(
 
         skys = [arr[~base_mask].ravel() if base_mask is not None else arr.ravel()]
     else:
-        if isinstance(ccd, CCDData):
-            arr = np.asarray(ccd.data)
-            ccd_mask = ccd.mask
-            if ccd_mask is not None:
-                base_mask = np.asarray(ccd_mask, dtype=bool)
-                if mask is not None:
-                    base_mask = base_mask | np.asarray(mask, dtype=bool)
-            else:
-                base_mask = None if mask is None else np.asarray(mask, dtype=bool)
-        else:
-            arr = np.asarray(ccd)
-            base_mask = None if mask is None else np.asarray(mask, dtype=bool)
-        flat_sky, offsets = annulus.sampled_values(arr, mask=base_mask, flat=True)
-        skys = [
+        flat_sky, offsets = annul2values(ccd, annulus, mask=mask, flat=True)
+        sky_slices = (
             flat_sky[start:stop]
             for start, stop in zip(offsets[:-1], offsets[1:], strict=True)
-        ]
+        )
+        skys = list(sky_slices) if return_skyarr else sky_slices
 
     if sky_clipper is None:
 
@@ -208,18 +241,22 @@ def _sky_fit(
     sky_clipped = _clip_sky_values(sky, sky_clipper, kwargs)
     if sky_clipped.size == 0:
         return np.nan, np.nan, 0, sky.size
+    sky_clipped = _as_reducer_1d_values(sky_clipped)
 
     if isinstance(method, str):
         method = method.lower()
-        var, mean = imck.var_1d(sky_clipped, ddof=std_ddof, return_mean=True)
-        std = np.sqrt(var)
+        std, mean = rdl.std_mean_valid(
+            sky_clipped,
+            ddof=std_ddof,
+            copy=False,
+        )
         if method in {"sex", "iraf", "mmm"}:
-            med = imck.median_1d(sky_clipped)
+            med = rdl.median_valid(sky_clipped, copy=False)
         if method == "sex":
             use_median = std > 0.0 and (mean - med) / std > 0.3
             msky = med if use_median else (2.5 * med) - (1.5 * mean)
         elif method == "median":
-            msky = imck.median_1d(sky_clipped)
+            msky = rdl.median_valid(sky_clipped, copy=False)
         elif method == "mean":
             msky = mean
         elif method == "iraf":
@@ -230,8 +267,7 @@ def _sky_fit(
             raise ValueError(f"{method=} not understood")
 
     else:
-        var = imck.var_1d(sky_clipped, ddof=std_ddof)
-        std = np.sqrt(var)
+        std = rdl.std_valid(sky_clipped, ddof=std_ddof, copy=False)
         msky = method(sky_clipped, std)
 
     nsky = sky_clipped.size

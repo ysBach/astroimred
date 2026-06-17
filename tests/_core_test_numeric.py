@@ -2,6 +2,7 @@
 
 import numpy as np
 import pytest
+import reducers as rd
 
 from astroimred._core import numeric
 
@@ -69,6 +70,309 @@ class TestWvg:
         with pytest.raises(ValueError):
             numeric.wvg(val, err=err, ivar=err)
 
+    def test_flat_weighted_average_uses_lowlevel_reducer(self, monkeypatch):
+        """Flattened weighted averages should use reducers' fused weighted sum."""
+        import reducers.lowlevel as rdl
+
+        calls = {}
+
+        def fake_weighted_sum_and_weights_valid(values, weights):
+            calls["values"] = values.copy()
+            calls["weights"] = weights.copy()
+            return 30.0, 10.0
+
+        monkeypatch.setattr(
+            rdl,
+            "weighted_sum_and_weights_valid",
+            fake_weighted_sum_and_weights_valid,
+        )
+
+        val = np.array([1.0, 2.0, 3.0])
+        ivar = np.array([2.0, 3.0, 5.0])
+        avg, stderr = numeric.wvg(val, ivar=ivar, return_se=True)
+
+        assert avg == 3.0
+        assert stderr == 1 / np.sqrt(10.0)
+        np.testing.assert_array_equal(calls["values"], val)
+        np.testing.assert_array_equal(calls["weights"], ivar)
+
+    def test_scalar_weight_keeps_existing_numpy_semantics(self, monkeypatch):
+        """Scalar uncertainty keeps the legacy NumPy path."""
+        import reducers.lowlevel as rdl
+
+        def fail_if_called(*args, **kwargs):
+            raise AssertionError("scalar weights should not use low-level reducer")
+
+        monkeypatch.setattr(rdl, "weighted_sum_and_weights_valid", fail_if_called)
+
+        result = numeric.wvg(np.array([1.0, 2.0, 3.0]), err=1.0)
+
+        assert result == 6.0
+
+    @pytest.mark.parametrize("axis", [0, -1])
+    def test_axis_weighted_average_uses_reducers(self, monkeypatch, axis):
+        """Supported axis weighted averages should use reducers.average."""
+        calls = {}
+
+        def fake_average(values, weights=None, axis=None, *, validate=True):
+            calls["values_shape"] = values.shape
+            calls["weights_shape"] = weights.shape
+            calls["axis"] = axis
+            calls["validate"] = validate
+            return np.full(np.average(values, weights=weights, axis=axis).shape, 7.0)
+
+        monkeypatch.setattr(rd, "average", fake_average)
+
+        val = np.arange(2 * 3.0).reshape(2, 3)
+        ivar = np.ones_like(val)
+        result = numeric.wvg(val, ivar=ivar, axis=axis)
+
+        assert calls == {
+            "values_shape": (2, 3),
+            "weights_shape": (2, 3),
+            "axis": axis,
+            "validate": True,
+        }
+        np.testing.assert_array_equal(
+            result, np.full(np.average(val, weights=ivar, axis=axis).shape, 7.0)
+        )
+
+    def test_axis_weighted_average_return_se_uses_reducers_sum(self, monkeypatch):
+        """Standard error should use reducers.sum for supported axis paths."""
+        calls = {}
+
+        def fake_average(values, weights=None, axis=None, *, validate=True):
+            calls["average_axis"] = axis
+            return np.array([2.0, 3.0, 4.0])
+
+        def fake_sum(values, axis=None, *, validate=True):
+            calls["sum_values"] = values.copy()
+            calls["sum_axis"] = axis
+            calls["sum_validate"] = validate
+            return np.array([4.0, 9.0, 16.0])
+
+        monkeypatch.setattr(rd, "average", fake_average)
+        monkeypatch.setattr(rd, "sum", fake_sum)
+
+        val = np.arange(2 * 3.0).reshape(2, 3)
+        ivar = np.ones_like(val)
+        avg, stderr = numeric.wvg(val, ivar=ivar, axis=0, return_se=True)
+
+        np.testing.assert_array_equal(avg, [2.0, 3.0, 4.0])
+        np.testing.assert_array_equal(stderr, [0.5, 1.0 / 3.0, 0.25])
+        assert calls["average_axis"] == 0
+        np.testing.assert_array_equal(calls["sum_values"], ivar)
+        assert calls["sum_axis"] == 0
+        assert calls["sum_validate"] is True
+
+
+class TestQuantile:
+    def test_nan_quantile_axis_none_uses_reducers(self, monkeypatch):
+        """NaN-aware flattened quantiles should delegate to reducers."""
+        calls = {}
+
+        def fake_nanquantile(values, q, axis=None, *, ignore_inf=False, validate=True):
+            calls["values"] = values.copy()
+            calls["q"] = q
+            calls["axis"] = axis
+            calls["ignore_inf"] = ignore_inf
+            calls["validate"] = validate
+            return np.array([1.25, 4.75])
+
+        monkeypatch.setattr(rd, "nanquantile", fake_nanquantile)
+
+        result = numeric.quantile_lh(
+            np.array([1.0, np.nan, 3.0, 5.0]),
+            0.25,
+            0.75,
+            nanfunc=True,
+        )
+
+        np.testing.assert_array_equal(result, [1.25, 4.75])
+        np.testing.assert_array_equal(calls["values"], [1.0, np.nan, 3.0, 5.0])
+        assert calls == {
+            "values": calls["values"],
+            "q": (0.25, 0.75),
+            "axis": None,
+            "ignore_inf": False,
+            "validate": True,
+        }
+
+    def test_nan_quantile_empty_input_returns_pair_of_nan(self):
+        """Empty flattened input follows reducers' two-quantile shape."""
+        result = numeric.quantile_lh(np.array([]), 0.25, 0.75, nanfunc=True)
+
+        np.testing.assert_array_equal(np.shape(result), (2,))
+        np.testing.assert_array_equal(np.isnan(result), [True, True])
+
+    def test_plain_quantile_axis_none_uses_reducers(self, monkeypatch):
+        """Plain flattened quantiles should delegate to reducers."""
+        calls = {}
+
+        def fake_quantile(values, q, axis=None, *, validate=True):
+            calls["values"] = values.copy()
+            calls["q"] = q
+            calls["axis"] = axis
+            calls["validate"] = validate
+            return np.array([1.5, 4.5])
+
+        monkeypatch.setattr(rd, "quantile", fake_quantile)
+
+        data = np.array([1.0, 3.0, 5.0])
+        result = numeric.quantile_lh(data, 0.25, 0.75)
+
+        np.testing.assert_array_equal(result, [1.5, 4.5])
+        np.testing.assert_array_equal(calls["values"], [1.0, 3.0, 5.0])
+        assert calls["q"] == (0.25, 0.75)
+        assert calls["axis"] is None
+        assert calls["validate"] is True
+        np.testing.assert_array_equal(data, [1.0, 3.0, 5.0])
+
+    def test_plain_quantile_axis_none_delegates_int64_to_reducers(self, monkeypatch):
+        """Integer dtype support should come from reducers, not local whitelists."""
+        calls = {}
+
+        def fake_quantile(values, q, axis=None, *, validate=True):
+            calls["dtype"] = values.dtype
+            return np.array([2.0, 4.0])
+
+        monkeypatch.setattr(rd, "quantile", fake_quantile)
+
+        data = np.array([2**60, 2**60 + 2, 2**60 + 4], dtype=np.int64)
+        result = numeric.quantile_lh(data, 0.25, 0.75)
+
+        np.testing.assert_array_equal(result, [2.0, 4.0])
+        assert calls["dtype"] == np.dtype(np.int64)
+
+    def test_nan_quantile_axis_last_uses_reducers(self, monkeypatch):
+        """NaN-aware last-axis quantiles should delegate to reducers."""
+        calls = {}
+
+        def fake_nanquantile(values, q, axis=None, *, ignore_inf=False, validate=True):
+            calls["shape"] = values.shape
+            calls["q"] = q
+            calls["axis"] = axis
+            calls["ignore_inf"] = ignore_inf
+            calls["validate"] = validate
+            return np.full((2, values.shape[0], values.shape[1]), 7.0)
+
+        monkeypatch.setattr(rd, "nanquantile", fake_nanquantile)
+
+        arr = np.arange(2 * 3 * 4.0).reshape(2, 3, 4)
+        result = numeric.quantile_lh(arr, 0.25, 0.75, axis=-1, nanfunc=True)
+
+        assert calls == {
+            "shape": (2, 3, 4),
+            "q": (0.25, 0.75),
+            "axis": -1,
+            "ignore_inf": False,
+            "validate": True,
+        }
+        np.testing.assert_array_equal(result, np.full((2, 2, 3), 7.0))
+
+    def test_plain_quantile_axis0_uses_reducers(self, monkeypatch):
+        """Plain axis-0 quantiles should delegate to reducers."""
+        calls = {}
+
+        def fake_quantile(values, q, axis=None, *, validate=True):
+            calls["shape"] = values.shape
+            calls["q"] = q
+            calls["axis"] = axis
+            calls["validate"] = validate
+            return np.full((2, values.shape[1]), 8.0)
+
+        monkeypatch.setattr(rd, "quantile", fake_quantile)
+
+        arr = np.arange(3 * 4.0).reshape(3, 4)
+        result = numeric.quantile_lh(arr, 0.25, 0.75, axis=0, nanfunc=False)
+
+        assert calls == {
+            "shape": (3, 4),
+            "q": (0.25, 0.75),
+            "axis": 0,
+            "validate": True,
+        }
+        np.testing.assert_array_equal(result, np.full((2, 4), 8.0))
+
+    def test_plain_quantile_axis0_int64_uses_reducers(self, monkeypatch):
+        """Axis quantiles should not use local dtype gates."""
+        calls = {}
+
+        def fake_quantile(values, q, axis=None, *, validate=True):
+            calls["dtype"] = values.dtype
+            return np.array([[1.0, 2.0], [3.0, 4.0]])
+
+        monkeypatch.setattr(rd, "quantile", fake_quantile)
+
+        arr = np.array(
+            [[2**60, 2**60 + 2], [2**60 + 4, 2**60 + 8]],
+            dtype=np.int64,
+        )
+        result = numeric.quantile_lh(arr, 0.25, 0.75, axis=0, nanfunc=False)
+
+        np.testing.assert_array_equal(result, [[1.0, 2.0], [3.0, 4.0]])
+        assert calls["dtype"] == np.dtype(np.int64)
+
+    def test_nan_quantile_axis_with_inf_follows_reducers_semantics(self):
+        """Reducers semantics, not NumPy fallback, define infinity handling."""
+        arr = np.array([[1.0, np.inf], [3.0, 5.0]])
+
+        result = numeric.quantile_lh(arr, 0.25, 0.75, axis=0, nanfunc=True)
+        expected = rd.nanquantile(arr, (0.25, 0.75), axis=0)
+
+        np.testing.assert_array_equal(result, expected)
+
+    def test_plain_quantile_axis_with_inf_follows_reducers_semantics(self):
+        """Plain quantiles should keep reducers infinity semantics."""
+        arr = np.array([[1.0, np.inf], [3.0, 5.0]])
+
+        result = numeric.quantile_lh(arr, 0.25, 0.75, axis=0, nanfunc=False)
+        expected = rd.quantile(arr, (0.25, 0.75), axis=0)
+
+        np.testing.assert_array_equal(result, expected)
+
+    def test_complex_quantile_uses_reducers_error(self):
+        """Complex inputs should surface reducers' real-numeric validation."""
+        with pytest.raises(TypeError, match="real numeric dtypes"):
+            numeric.quantile_lh(np.array([1 + 2j, 2 + 1j]), 0.25, 0.75)
+
+    def test_nan_quantile_axis_all_nan_slice_matches_reducers(self):
+        """All-NaN slices should follow reducers semantics."""
+        arr = np.array([[np.nan, 1.0], [np.nan, 3.0]])
+
+        result = numeric.quantile_lh(arr, 0.25, 0.75, axis=0, nanfunc=True)
+        expected = rd.nanquantile(arr, (0.25, 0.75), axis=0)
+
+        np.testing.assert_allclose(result, expected, equal_nan=True)
+
+
+def test_quantile_lh_rejects_removed_interpolation_api():
+    """Removed interpolation keyword arguments should no longer be accepted."""
+    data = np.array([1.0, 2.0, 3.0])
+
+    with pytest.raises(TypeError):
+        numeric.quantile_lh(data, 0.25, 0.75, interpolation="nearest")
+    with pytest.raises(TypeError):
+        numeric.quantile_lh(data, 0.25, 0.75, linterp="higher")
+    with pytest.raises(TypeError):
+        numeric.quantile_lh(data, 0.25, 0.75, hinterp="lower")
+
+
+def test_quantile_lh_middle_axis_follows_reducers_contract():
+    """Only reducers-supported axes should be accepted."""
+    data = np.arange(2 * 3 * 4.0).reshape(2, 3, 4)
+
+    with pytest.raises(NotImplementedError, match="axis"):
+        numeric.quantile_lh(data, 0.25, 0.75, axis=1)
+
+
+def test_quantile_sigma_rejects_removed_interpolation_api():
+    """Quantile-sigma should expose the same simplified quantile API."""
+    data = np.array([1.0, 2.0, 3.0])
+
+    with pytest.raises(TypeError):
+        numeric.quantile_sigma(data, interpolation="nearest")
+
 
 class TestBinning:
     """Tests for n-D array binning."""
@@ -117,23 +421,101 @@ class TestBinning:
         expected = arr.reshape(2, 3, 4, 2).sum(axis=(1, 3))
         np.testing.assert_array_equal(out, expected)
 
-    def test_median_binning_uses_imcombiners_kernel(self, monkeypatch):
-        """Median binning should dispatch through imcombiners' stack median."""
-        import imcombiners.kernels as imck
+    def test_median_binning_uses_reducers(self, monkeypatch):
+        """Median binning should dispatch through reducers' stack median."""
+        import reducers as rd
 
         calls = {}
 
-        def fake_median(stack, *, validate=True):
+        def fake_median(stack, axis=None, *, validate=True):
             calls["shape"] = stack.shape
+            calls["axis"] = axis
+            calls["validate"] = validate
             return np.full(stack.shape[1:], 7.0)
 
-        monkeypatch.setattr(imck, "median", fake_median)
+        monkeypatch.setattr(rd, "median", fake_median)
 
         arr = np.arange(16.0).reshape(4, 4)
         out = numeric.binning(arr, factors=(2, 2), order_xyz=False, binfunc=np.median)
 
         assert calls["shape"] == (4, 2, 2)
+        assert calls["axis"] == 0
+        assert calls["validate"] is False
         np.testing.assert_array_equal(out, np.full((2, 2), 7.0))
+
+    @pytest.mark.parametrize(
+        ("binfunc_name", "reducer_name"),
+        [
+            ("mean", "mean"),
+            ("nanmean", "nanmean"),
+            ("median", "median"),
+            ("nanmedian", "nanmedian"),
+            ("sum", "sum"),
+            ("nansum", "nansum"),
+        ],
+    )
+    def test_float_binning_known_reducers_use_reducers(
+        self,
+        monkeypatch,
+        binfunc_name,
+        reducer_name,
+    ):
+        """Known NumPy reducers should dispatch through reducers for float data."""
+        import reducers as rd
+
+        calls = {}
+        reducer = getattr(rd, reducer_name)
+
+        def fake_reducer(stack, axis=None, *, validate=True):
+            calls["shape"] = stack.shape
+            calls["axis"] = axis
+            calls["validate"] = validate
+            calls["dtype"] = stack.dtype
+            return np.full(stack.shape[1:], 7.0, dtype=stack.dtype)
+
+        monkeypatch.setattr(rd, reducer_name, fake_reducer)
+
+        arr = np.arange(16.0, dtype=np.float32).reshape(4, 4)
+        out = numeric.binning(
+            arr,
+            factors=(2, 2),
+            order_xyz=False,
+            binfunc=getattr(np, binfunc_name),
+        )
+
+        assert reducer is not getattr(rd, reducer_name)
+        assert calls == {
+            "shape": (4, 2, 2),
+            "axis": 0,
+            "validate": False,
+            "dtype": np.dtype("float32"),
+        }
+        np.testing.assert_array_equal(out, np.full((2, 2), 7.0, dtype=np.float32))
+
+    def test_integer_sum_binning_preserves_numpy_dtype(self, monkeypatch):
+        """Integer sum keeps NumPy's integer accumulator semantics."""
+        import reducers as rd
+
+        def fail_sum(*args, **kwargs):
+            raise AssertionError("integer sum should use NumPy")
+
+        monkeypatch.setattr(rd, "sum", fail_sum)
+
+        arr = np.arange(16, dtype=np.int16).reshape(4, 4)
+        out = numeric.binning(arr, factors=(2, 2), order_xyz=False, binfunc=np.sum)
+        expected = arr.reshape(2, 2, 2, 2).sum(axis=(1, 3))
+
+        assert out.dtype == expected.dtype
+        np.testing.assert_array_equal(out, expected)
+
+    def test_reducer_binning_accepts_big_endian_data(self):
+        """Reducer-backed binning should handle FITS-style big-endian arrays."""
+        arr = np.arange(16.0, dtype=">f8").reshape(4, 4)
+
+        out = numeric.binning(arr, factors=(2, 2), order_xyz=False, binfunc=np.mean)
+        expected = arr.reshape(2, 2, 2, 2).mean(axis=(1, 3))
+
+        np.testing.assert_allclose(out, expected)
 
     def test_nd_binning_preserves_leading_axis(self):
         """n-D binning should work when leading axes have factor one."""

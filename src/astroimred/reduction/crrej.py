@@ -2,14 +2,15 @@
 
 import astroscrappy
 import numpy as np
+import reducers.lowlevel as rdl
 from astro_ndslice import is_list_like, listify, slicefy
 from astropy import units as u
 from astropy.nddata import CCDData
-from astropy.stats import sigma_clipped_stats
 from astropy.time import Time
 from astroscrappy import detect_cosmics
 
 from astroimred._core.astropy_helpers import as_quantity
+from astroimred._core.numeric import _as_reducer_1d_values, sigma_clipper
 from astroimred._core.types import FQArr, StrPathLike
 from astroimred.fitsmgmt.header import cmt2hdr, update_process, update_tlm
 from astroimred.fitsmgmt.io import _parse_image
@@ -40,6 +41,45 @@ ASTROSCRAPPY_DIVFACTOR = detect_cosmics(np.ones((3, 3)), gain=1.0, niter=0)[1][0
 #   (Anaconda) on the latter?
 #   2021-12-13 13:27:35 (KST: GMT+09:00) ysBach
 #   2022-04-02 14:58:44 (KST: GMT+09:00) ysBach
+
+
+def _sigma_clipped_std(data: np.ndarray, sigclip_kw: dict) -> float:
+    """Return scalar sigma-clipped standard deviation."""
+    kwargs = dict(sigclip_kw)
+    supported = {
+        "sigma",
+        "sigma_lower",
+        "sigma_upper",
+        "maxiters",
+        "cenfunc",
+        "stdfunc",
+        "std_ddof",
+    }
+    unsupported = set(kwargs) - supported
+    if unsupported:
+        names = ", ".join(sorted(unsupported))
+        msg = f"Unsupported sigclip_kw for scalar imcombiners clipping: {names}"
+        raise ValueError(msg)
+
+    cenfunc = kwargs.get("cenfunc", "median")
+    stdfunc = kwargs.get("stdfunc", "std")
+    if not (
+        isinstance(cenfunc, str)
+        and cenfunc in {"median", "mean"}
+        and isinstance(stdfunc, str)
+        and stdfunc in {"std", "mad_std"}
+    ):
+        msg = (
+            "Only string cenfunc in {'median', 'mean'} and stdfunc in "
+            "{'std', 'mad_std'} are supported."
+        )
+        raise ValueError(msg)
+
+    std_ddof = int(kwargs.pop("std_ddof", 0))
+    clipped = _as_reducer_1d_values(sigma_clipper(np.asarray(data).ravel(), **kwargs))
+    if clipped.size == 0:
+        return np.nan
+    return float(rdl.std_skip_nonfinite(clipped, ddof=std_ddof))
 
 
 def parse_crrej_psf(
@@ -543,9 +583,10 @@ def medfilt_bpm(
         `~scipy.ndimage.median_filter`.
 
     sigclip_kw : `dict`, optional.
-        The parameters used for `~astropy.stats.sigma_clipped_stats` when
-        estimating the sky standard deviation at `std_section`. This is
-        **ignored** if ``std_model='ccd'``.
+        The scalar sigma-clipping parameters used when estimating the sky
+        standard deviation at `std_section`. Supported keys are `sigma`,
+        `sigma_lower`, `sigma_upper`, `maxiters`, `cenfunc`, `stdfunc`, and
+        `std_ddof`. This is **ignored** if ``std_model='ccd'``.
         Default is ``dict(sigma=3.0, maxiters=5, std_ddof=1)``.
 
     std_section : `str`, optional.
@@ -721,7 +762,7 @@ def medfilt_bpm(
 
     elif std_model == "std":
         _t = Time.now()
-        _, _, std = sigma_clipped_stats(arr[tuple(slices)], **sigclip_kw)
+        std = _sigma_clipped_std(arr[tuple(slices)], sigclip_kw)
 
         if update_header:
             if std_section is None:

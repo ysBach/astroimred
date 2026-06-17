@@ -61,22 +61,39 @@ class TestSigmaClipper:
         assert calls["kwargs"]["sigma"] == (2.0, 2.0)
         assert calls["kwargs"]["stdfunc"] == "std"
 
-    def test_sigma_clipper_1d_supports_imcombiners_mad(self, monkeypatch):
-        """`stdfunc='mad'` should stay on the imcombiners fast path."""
+    def test_sigma_clipper_rejects_mad_stdfunc(self, monkeypatch):
+        """The public robust spread spelling is `mad_std`, not `mad`."""
+        import imcombiners.kernels as imck
+
+        def fake_mask(values, **kwargs):
+            msg = "mad should not use the imcombiners fast path"
+            raise AssertionError(msg)
+
+        monkeypatch.setattr(imck, "sigclip_mask_1d", fake_mask)
+
+        with pytest.raises(ValueError, match="stdfunc"):
+            sigma_clipper(np.array([1.0, 2.0, 3.0]), stdfunc="mad")
+
+    def test_sigma_clipper_1d_maps_mad_std_to_imcombiners_mad(self, monkeypatch):
+        """Astropy-style `mad_std` should use imcombiners' MAD fast path."""
         import imcombiners.kernels as imck
 
         calls = {}
 
         def fake_mask(values, **kwargs):
+            calls["values"] = values.copy()
             calls["stdfunc"] = kwargs["stdfunc"]
-            return np.zeros(values.shape, dtype=bool)
+            calls["validate"] = kwargs["validate"]
+            return np.array([False, True, False])
 
         monkeypatch.setattr(imck, "sigclip_mask_1d", fake_mask)
 
-        result = sigma_clipper(np.array([1.0, 2.0, 3.0]), stdfunc="mad")
+        result = sigma_clipper(np.array([1.0, 100.0, 2.0]), stdfunc="mad_std")
 
-        np.testing.assert_array_equal(result, [1.0, 2.0, 3.0])
+        np.testing.assert_array_equal(result, [1.0, 2.0])
+        np.testing.assert_array_equal(calls["values"], [1.0, 100.0, 2.0])
         assert calls["stdfunc"] == "mad"
+        assert calls["validate"] is False
 
 
 class TestMagsum:

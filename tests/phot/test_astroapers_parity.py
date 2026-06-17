@@ -6,7 +6,9 @@ import pytest
 from astropy.nddata import CCDData
 from numpy.testing import assert_allclose, assert_array_equal
 
+from astroimred.phot import photometer as public_photometer
 from astroimred.phot.apphot import apphot_annulus, photometer
+from astroimred.phot.background import annul2values
 
 photutils_aperture = pytest.importorskip("photutils.aperture")
 
@@ -185,6 +187,10 @@ def test_photometer_false_mask_has_zero_nbadpix(parity_image):
     assert_allclose(measured.nbadpix, 0.0, atol=1.0e-12)
 
 
+def test_photometer_is_public_from_phot_namespace():
+    assert public_photometer is photometer
+
+
 def test_photometer_uses_astroapers_object_api(monkeypatch):
     data = np.ones((8, 8), dtype=float)
     error = np.full_like(data, 2.0)
@@ -233,6 +239,18 @@ def test_sky_values_match_photutils_center_selection(parity_image):
 
     for actual_values, expected_values in zip(actual, expected, strict=True):
         assert_array_equal(np.sort(actual_values), np.sort(expected_values))
+
+
+def test_annul2values_matches_astroapers_sampled_values(parity_image):
+    bad = np.zeros_like(parity_image, dtype=bool)
+    bad[42:45, 37:40] = True
+    astro_an = aap.CircAn([(40.2, 41.5), (90.7, 70.1)], r_in=8, r_out=13)
+
+    actual = annul2values(parity_image, astro_an, mask=bad)
+    expected = astro_an.sampled_values(parity_image, mask=bad)
+
+    for actual_values, expected_values in zip(actual, expected, strict=True):
+        assert_array_equal(actual_values, expected_values)
 
 
 @pytest.mark.parametrize("position", [(30.0, 31.0), (30.2, 31.3), (30.5, 31.5)])

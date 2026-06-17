@@ -1,6 +1,6 @@
 [project]
 name = "astroimred"
-version = "0.3.0"
+version = "0.3.1"
 description = "FITS file management and lightweight inspection utilities."
 readme = "README.md"
 authors = [
@@ -10,12 +10,13 @@ requires-python = ">=3.11"
 # Core dependencies for basic manipulation of FITS
 dependencies = [
     "astropy>=7.0",
-    "astroapers",
     "astro-ndslice>=0.2",
-    "imcombiners",
     "numpy>=1.24",
     "pandas>=2.0",
     "pyarrow>=14",
+    "astroapers>=0.1.2",
+    "imcombiners>=0.1.1",
+    "reducers>=0.3.0",
 ]
 
 [project.scripts]

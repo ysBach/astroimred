@@ -3,8 +3,8 @@
 import os
 from collections.abc import Sequence
 
-import imcombiners.kernels as imck
 import numpy as np
+import reducers.lowlevel as rdl
 from astro_ndslice import slicefy
 from astropy import units as u
 from astropy.io import fits
@@ -26,14 +26,6 @@ __all__ = [
 ]
 
 _MAD_STD_NORMAL_SCALE = 1.482602218505602
-_IMCK_1D_DTYPES = {
-    np.dtype(np.uint8),
-    np.dtype(np.uint16),
-    np.dtype(np.int16),
-    np.dtype(np.int32),
-    np.dtype(np.float32),
-    np.dtype(np.float64),
-}
 
 
 def _data_header_from_array_or_path(
@@ -114,16 +106,13 @@ def errormap(
             return np.sqrt(variance)
 
 
-def _finite_imck_values(data: np.ndarray) -> np.ndarray:
-    """Return native-endian finite 1-D values accepted by imcombiners."""
+def _finite_reducer_values(data: np.ndarray) -> np.ndarray:
+    """Return native-endian finite 1-D values accepted by reducers."""
     data = np.asarray(data).ravel()
     data = data[np.isfinite(data)]
     dtype = data.dtype
     if dtype.byteorder not in {"=", "|"}:
         data = data.astype(dtype.newbyteorder("="), copy=False)
-        dtype = data.dtype
-    if dtype not in _IMCK_1D_DTYPES:
-        data = data.astype(np.float64, copy=False)
     return np.ascontiguousarray(data)
 
 
@@ -176,29 +165,32 @@ def give_stats(
         statsecs = [statsecs] if isinstance(statsecs, str) else list(statsecs)
         data = np.array([data[slicefy(sec)] for sec in statsecs])
 
-    data = _finite_imck_values(data)
+    data = _finite_reducer_values(data)
 
-    var, mean = imck.var_1d(data, ddof=1, return_mean=True)
-    med = imck.median_1d(data)
+    std, mean = rdl.std_mean_valid(data, ddof=1)
+    d_min, d_max = rdl.minmax_valid(data)
+    med = rdl.median_valid(data)
+    d_zmin, d_zmax = ZScaleInterval().get_limits(data)
 
     result = {
         "num": np.size(data),
-        "min": imck.min_1d(data),
-        "max": imck.max_1d(data),
+        "min": d_min,
+        "max": d_max,
         "avg": mean,
         "med": med,
-        "std": np.sqrt(var),
+        "std": std,
         "slices": statsecs,
     }
-    result["madstd"] = _MAD_STD_NORMAL_SCALE * imck.median_1d(np.abs(data - med))
+    result["madstd"] = _MAD_STD_NORMAL_SCALE * rdl.median_valid_in_place(
+        np.abs(data - med)
+    )
     if percentiles is not None:
         result["percentiles"] = percentiles
-        result["pct"] = np.percentile(data, percentiles)
+        result["pct"] = rdl.percentiles_valid_in_place(data, percentiles)
     # d_pct = np.percentile(data, percentiles)
     # for i, pct in enumerate(percentiles):
     #     result[f"percentile_{round(pct, 4)}"] = d_pct[i]
 
-    d_zmin, d_zmax = ZScaleInterval().get_limits(data)
     result["zmin"] = d_zmin
     result["zmax"] = d_zmax
 

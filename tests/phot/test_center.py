@@ -11,6 +11,7 @@ from photutils.centroids import centroid_com
 
 from astroimred.phot.center import (
     GaussianConst2D,
+    _background,
     center_sep,
     circular_bbox_cut,
     circular_slice,
@@ -222,6 +223,80 @@ class TestGaussianConst2D:
         value = model(15.0, 5.0)  # x = 5 + 10 = 15
         # exp(-50) ≈ 0
         assert_allclose(value, 10.0, atol=1e-10)
+
+
+class TestBackground:
+    """Tests for small-cutout background reducers."""
+
+    def test_background_clean_min_uses_numpy_fast_path(self, monkeypatch):
+        """Finite minimum background should avoid the NaN-skipping reducer."""
+        import reducers.lowlevel as rdl
+
+        def fail_if_called(*args, **kwargs):
+            raise AssertionError("finite min should use NumPy")
+
+        monkeypatch.setattr(rdl, "min_skip_nan", fail_if_called)
+
+        result = _background(np.array([[1.0, 2.0], [3.0, 4.0]]), bkg="min")
+
+        assert result == 1.0
+
+    def test_background_nan_min_uses_reducers(self, monkeypatch):
+        """NaN-aware minimum background should use low-level reducers."""
+        import reducers.lowlevel as rdl
+
+        calls = {}
+
+        def fake_min_skip_nan(values, *, copy=False):
+            calls["values"] = values.copy()
+            calls["copy"] = copy
+            return 1.5
+
+        monkeypatch.setattr(rdl, "min_skip_nan", fake_min_skip_nan)
+
+        result = _background(np.array([[np.nan, 2.0], [3.0, 4.0]]), bkg="min")
+
+        assert result == 1.5
+        assert calls["copy"] is False
+        np.testing.assert_array_equal(calls["values"], [np.nan, 2.0, 3.0, 4.0])
+
+    def test_background_nan_mean_uses_reducers_when_needed(self, monkeypatch):
+        """NaN-aware mean fallback should use low-level reducers."""
+        import reducers.lowlevel as rdl
+
+        calls = {}
+
+        def fake_mean_skip_nan(values, *, copy=False):
+            calls["values"] = values.copy()
+            calls["copy"] = copy
+            return 2.5
+
+        monkeypatch.setattr(rdl, "mean_skip_nan", fake_mean_skip_nan)
+
+        result = _background(np.array([[np.nan, 2.0], [3.0, 4.0]]), bkg="mean")
+
+        assert result == 2.5
+        assert calls["copy"] is False
+        np.testing.assert_array_equal(calls["values"], [np.nan, 2.0, 3.0, 4.0])
+
+    def test_background_nan_median_uses_reducers(self, monkeypatch):
+        """NaN-aware median background should use low-level reducers."""
+        import reducers.lowlevel as rdl
+
+        calls = {}
+
+        def fake_median_skip_nan(values, *, copy=False):
+            calls["values"] = values.copy()
+            calls["copy"] = copy
+            return 3.5
+
+        monkeypatch.setattr(rdl, "median_skip_nan", fake_median_skip_nan)
+
+        result = _background(np.array([[np.nan, 2.0], [3.0, 4.0]]), bkg="median")
+
+        assert result == 3.5
+        assert calls["copy"] is False
+        np.testing.assert_array_equal(calls["values"], [np.nan, 2.0, 3.0, 4.0])
 
 
 # =============================================================================

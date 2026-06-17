@@ -10,7 +10,7 @@ from astropy.table import QTable
 from ..logging import logger
 from .background import sky_fit
 
-__all__ = ["apphot_annulus"]
+__all__ = ["PhotometryResult", "apphot_annulus", "photometer"]
 
 
 @dataclass(frozen=True)

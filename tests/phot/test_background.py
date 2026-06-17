@@ -8,6 +8,7 @@ import astroapers as aap
 import imcombiners.kernels as imc_kernels
 import numpy as np
 import pytest
+import reducers.lowlevel as rdl
 from astropy.nddata import CCDData
 from numpy.testing import assert_allclose
 
@@ -265,16 +266,17 @@ class TestSkyFit:
         assert_allclose(result["msky"][0], 0.5)
         assert calls == [(2048,)]
 
-    def test_sky_fit_mean_uses_imcombiners_variance_mean(self, monkeypatch):
-        """Mean sky statistics should reuse imcombiners' one-pass var/mean."""
+    def test_sky_fit_mean_uses_reducers_std_mean(self, monkeypatch):
+        """Mean sky statistics should reuse reducers' std/mean."""
         calls = {}
 
-        def fake_var_1d(values, *, ddof=0, return_mean=False, validate=True):
+        def fake_std_mean_valid(values, ddof=0, *, copy=False):
+            calls["shape"] = values.shape
             calls["ddof"] = ddof
-            calls["return_mean"] = return_mean
-            return np.nanvar(values, ddof=ddof), np.nanmean(values)
+            calls["copy"] = copy
+            return np.nanstd(values, ddof=ddof), np.nanmean(values)
 
-        monkeypatch.setattr(imc_kernels, "var_1d", fake_var_1d)
+        monkeypatch.setattr(rdl, "std_mean_valid", fake_std_mean_valid)
 
         result = sky_fit(
             np.array([1.0, 2.0, 3.0]),
@@ -284,7 +286,11 @@ class TestSkyFit:
         )
 
         assert_allclose(result["msky"][0], 2.0)
-        assert calls == {"ddof": 1, "return_mean": True}
+        assert calls == {
+            "shape": (3,),
+            "ddof": 1,
+            "copy": False,
+        }
 
     @pytest.mark.parametrize("sky", [np.array([]), np.array([np.nan, np.nan])])
     def test_sky_fit_default_clipper_preserves_empty_result(self, sky):

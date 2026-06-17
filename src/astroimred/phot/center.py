@@ -2,6 +2,7 @@ import contextlib
 import logging
 
 import numpy as np
+import reducers.lowlevel as rdl
 from astropy.modeling import Fittable2DModel, Parameter
 from astropy.modeling.fitting import LevMarLSQFitter
 from astropy.modeling.models import Const2D, Gaussian2D
@@ -11,6 +12,7 @@ from scipy import ndimage
 from scipy.optimize import curve_fit
 
 from astroimred._core.astropy_helpers import Gaussian2D_correct
+from astroimred._core.numeric import _as_reducer_1d_values
 from astroimred.external.sep import (
     _as_sep_array,
     _combine_masks,
@@ -125,20 +127,19 @@ def _background(data, bkg="min"):
         Default is ``"min"``.
     """
     if bkg == "min":
-        # min/nanmin takes short time.
-        # An example of 7x7 data, min/nanmin=1.6/2.4 us.
-        return np.nanmin(data)
+        bkg = np.min(data)
+        if np.isnan(bkg):
+            bkg = rdl.min_skip_nan(_as_reducer_1d_values(data))
+        return bkg
     elif bkg == "mean":
         # Mostly it will have no NaN.
         # An example of 7x7 data, mean/nanmean=3/12 us.
         bkg = np.mean(data)
         if np.isnan(bkg):
-            bkg = np.nanmean(data)
+            bkg = rdl.mean_skip_nan(_as_reducer_1d_values(data))
         return bkg
     elif bkg == "median":
-        # median will anyway take long time.
-        # An example of 7x7 data, median/nanmedian=9/12 us.
-        return np.nanmedian(data)
+        return rdl.median_skip_nan(_as_reducer_1d_values(data))
     elif isinstance(bkg, (int, float, np.ndarray)):
         return bkg
     elif bkg is None:

@@ -5,6 +5,8 @@ from typing import Literal
 
 import imcombiners.kernels as imck
 import numpy as np
+import reducers as rd
+import reducers.lowlevel as rdl
 from astropy.stats import sigma_clip
 from numpy.typing import ArrayLike
 
@@ -22,14 +24,31 @@ __all__ = [
     "epadu2dB",
 ]
 
-_IMCK_STACK_DTYPES = {
-    np.dtype(np.uint8),
-    np.dtype(np.uint16),
-    np.dtype(np.int16),
-    np.dtype(np.int32),
-    np.dtype(np.float32),
-    np.dtype(np.float64),
-}
+
+def _native_dtype(dtype: np.dtype) -> np.dtype:
+    """Return dtype normalized to native byte order where applicable."""
+    dtype = np.dtype(dtype)
+    if dtype.byteorder not in {"=", "|"}:
+        return dtype.newbyteorder("=")
+    return dtype
+
+
+def _as_reducer_1d_values(values: ArrayLike) -> np.ndarray:
+    """Return native-endian contiguous 1-D values accepted by reducers."""
+    arr = np.asarray(values).ravel()
+    dtype = _native_dtype(arr.dtype)
+    if dtype != arr.dtype:
+        arr = arr.astype(dtype, copy=False)
+    return np.ascontiguousarray(arr)
+
+
+def _as_reducer_array(values: ArrayLike) -> np.ndarray:
+    """Return native-endian contiguous values accepted by reducers."""
+    arr = np.asarray(values)
+    dtype = _native_dtype(arr.dtype)
+    if dtype != arr.dtype:
+        arr = arr.astype(dtype, copy=False)
+    return np.ascontiguousarray(arr)
 
 
 def sqsum(*args: object) -> object:
@@ -57,7 +76,7 @@ def sigma_clipper(
     sigma_upper: float | None = None,
     maxiters: int | None = 5,
     cenfunc: Literal["median", "mean"] | Callable = "median",
-    stdfunc: Literal["std", "mad_std", "mad"] | Callable = "std",
+    stdfunc: Literal["std", "mad_std"] | Callable = "std",
 ) -> ArrayLike | tuple[ArrayLike, float, float] | tuple[ArrayLike, ...]:
     """Return sigma-clipped data with clipped values removed.
 
@@ -66,7 +85,8 @@ def sigma_clipper(
     rejected elements are physically removed from the returned ndarray. The
     default ``stdfunc`` ignores NaNs because Astropy may inject NaNs into
     intermediate arrays during iterative clipping. For 1-D robust clipping,
-    prefer ``stdfunc="mad"`` to use imcombiners' MAD spread estimator.
+    use ``stdfunc="mad_std"``; this is translated to the installed fast
+    backend's internal MAD name when needed.
     """
     arr = np.asarray(data)
     if arr.ndim == 1 and arr.size == 0:
@@ -77,19 +97,20 @@ def sigma_clipper(
         and isinstance(cenfunc, str)
         and cenfunc in {"median", "mean"}
         and isinstance(stdfunc, str)
-        and stdfunc in {"std", "mad"}
+        and stdfunc in {"std", "mad_std"}
     ):
         sigma_pair = (
             float(sigma if sigma_lower is None else sigma_lower),
             float(sigma if sigma_upper is None else sigma_upper),
         )
         mask_rej = imck.sigclip_mask_1d(
-            np.ascontiguousarray(arr),
+            _as_reducer_1d_values(arr),
             sigma=sigma_pair,
             maxiters=int(maxiters),
             cenfunc=cenfunc,
-            stdfunc=stdfunc,
+            stdfunc="mad" if stdfunc == "mad_std" else stdfunc,
             nkeep=0,
+            validate=False,
         )
         return arr[~mask_rej]
 
@@ -101,7 +122,7 @@ def sigma_clipper(
         sigma_upper=sigma_upper,
         maxiters=maxiters,
         cenfunc=cenfunc,
-        stdfunc="mad_std" if stdfunc == "mad" else stdfunc,
+        stdfunc=stdfunc,
     )
 
 
@@ -264,6 +285,24 @@ def wvg(
     else:
         weight = 1 / (np.asarray(err) ** 2)
 
+    if axis is None and val.shape == np.shape(weight):
+        weighted_sum, sum_weight = rdl.weighted_sum_and_weights_valid(val, weight)
+        mean = weighted_sum / sum_weight
+        if return_se:
+            return mean, 1 / np.sqrt(sum_weight)
+        return mean
+
+    if (
+        axis in {0, -1}
+        and np.shape(weight) != ()
+        and not (np.iscomplexobj(val) or np.iscomplexobj(weight))
+    ):
+        mean = rd.average(val, weights=weight, axis=axis)
+        if return_se:
+            sum_weight = rd.sum(weight, axis=axis)
+            return mean, 1 / np.sqrt(sum_weight)
+        return mean
+
     wsum = np.sum(weight, axis=axis)
     mean = np.sum(weight * val, axis=axis) / wsum
     if return_se:
@@ -275,12 +314,9 @@ def quantile_lh(
     a: np.ndarray,
     lq: float,
     hq: float,
-    axis: int | tuple[int, ...] | None = None,
+    axis: int | None = None,
     nanfunc: bool = False,
-    interpolation: str = "linear",
-    linterp: str | None = None,
-    hinterp: str | None = None,
-) -> list[np.ndarray]:
+) -> np.ndarray:
     """Return lower and upper quantiles.
 
     Parameters
@@ -288,37 +324,20 @@ def quantile_lh(
     a : array-like
         Input data.
 
-    lq, hq : array_like of `float`
-        Quantile or sequence of quantiles to compute, which must be between 0
-        and 1 inclusive.
+    lq, hq : `float`
+        Lower and upper quantiles to compute, which must be between 0 and 1
+        inclusive.
 
-    axis : {`int`, `tuple` of `int`, `None`}, optional
-        Axis or axes along which the quantiles are computed. The default is to
-        compute the quantile(s) along a flattened version of the array.
+    axis : {`int`, `None`}, optional
+        Axis along which the quantiles are computed. Supported values are
+        `None`, 0, -1, and ``a.ndim - 1``.
 
     nanfunc : `bool`, optional
-        Whether to use `~numpy.nanquantile` instead of `~numpy.quantile`.
+        Whether to use `~reducers.nanquantile` instead of `~reducers.quantile`.
         Default: `False`.
 
-    interpolation, linterp, hinterp : ``{'linear', 'lower', 'higher', 'midpoint', 'nearest'}``, optional.
-        This optional parameter specifies the interpolation method to use when
-        the desired quantile lies between two data points ``i < j``:
-        * 'linear': ``i + (j - i) * fraction``, where ``fraction`` is the
-          fractional part of the index surrounded by ``i`` and ``j``.
-        * 'lower': ``i``.
-        * 'higher': ``j``.
-        * 'nearest': ``i`` or ``j``, whichever is nearest.
-        * 'midpoint': ``(i + j) / 2``.
-        To tune the interpolation method for lower and higher quantiles
-        individually, set `linterp` and `hinterp` separately. An idea is to use
-        ``linterp='higher', hinterp='lower'`` to estimate the robust standard
-        deviation estimate.
     """
     a = np.asarray(a)
-    linterp = interpolation if linterp is None else linterp
-    hinterp = interpolation if hinterp is None else hinterp
-
-    qfunc = np.nanquantile if nanfunc else np.quantile
 
     try:
         lq = float(lq)
@@ -326,23 +345,14 @@ def quantile_lh(
     except TypeError as err:
         raise TypeError("lq and hq must be floats, not array-like.") from err
 
-    if linterp == hinterp:
-        out = qfunc(a, (lq, hq), axis=axis, interpolation=linterp)
-    else:
-        out_l = qfunc(a, lq, axis=axis, interpolation=linterp)
-        out_h = qfunc(a, hq, axis=axis, interpolation=hinterp)
-        out = [out_l, out_h]
-
-    return out
+    qfunc = rd.nanquantile if nanfunc else rd.quantile
+    return qfunc(a, (lq, hq), axis=axis)
 
 
 def quantile_sigma(
     a: np.ndarray,
-    axis: int | tuple[int, ...] | None = None,
+    axis: int | None = None,
     nanfunc: bool = False,
-    interpolation: str = "linear",
-    linterp: str | None = None,
-    hinterp: str | None = None,
 ) -> np.ndarray:
     """Estimate sigma from the 15.87 and 84.13 percent quantiles."""
     low, upp = quantile_lh(
@@ -351,9 +361,6 @@ def quantile_sigma(
         0.8413,
         axis=axis,
         nanfunc=nanfunc,
-        interpolation=interpolation,
-        linterp=linterp,
-        hinterp=hinterp,
     )
     return np.abs(upp - low) / 2
 
@@ -392,19 +399,40 @@ def _normalize_binning_factors(arr_shape, factors, order_xyz):
     return np.asarray(normalized, dtype=np.intp)
 
 
-def _imck_median_binning(
+def _reducer_stack_binning(
     reshaped: np.ndarray,
     nbin: np.ndarray,
     factors: np.ndarray,
+    reducer: Callable,
 ) -> np.ndarray:
-    """Median-bin a reshaped block view through imcombiners."""
+    """Bin a reshaped block view through a reducers axis-0 kernel."""
     bin_axes = tuple(range(0, reshaped.ndim, 2))
     factor_axes = tuple(range(1, reshaped.ndim, 2))
     stack = np.transpose(reshaped, (*factor_axes, *bin_axes)).reshape(
         int(np.prod(factors)),
         *(int(n) for n in nbin),
     )
-    return imck.median(np.ascontiguousarray(stack))
+    return reducer(_as_reducer_array(stack), axis=0, validate=False)
+
+
+def _binning_reducer(binfunc: Callable, arr: np.ndarray) -> Callable | None:
+    """Return the matching reducers function for supported binning reducers."""
+    dtype = _native_dtype(arr.dtype)
+
+    if binfunc is np.mean:
+        return rd.mean
+    if binfunc is np.nanmean:
+        return rd.nanmean
+    if binfunc is np.median:
+        return rd.median
+    if binfunc is np.nanmedian:
+        return rd.nanmedian
+    if np.issubdtype(dtype, np.floating):
+        if binfunc is np.sum:
+            return rd.sum
+        if binfunc is np.nansum:
+            return rd.nansum
+    return None
 
 
 def binning(
@@ -482,15 +510,8 @@ def binning(
         int(item) for pair in zip(nbin, factors, strict=True) for item in pair
     )
     reshaped = arr.reshape(newshape)
-    dtype = arr.dtype
-    if dtype.byteorder not in {"=", "|"}:
-        dtype = dtype.newbyteorder("=")
-    if (
-        binfunc is np.median
-        and not (np.issubdtype(arr.dtype, np.inexact) and np.isnan(arr).any())
-        and dtype in _IMCK_STACK_DTYPES
-    ):
-        return _imck_median_binning(reshaped, nbin, factors)
+    if reducer := _binning_reducer(binfunc, arr):
+        return _reducer_stack_binning(reshaped, nbin, factors, reducer)
     return binfunc(reshaped, axis=tuple(range(1, reshaped.ndim, 2)))
 
 

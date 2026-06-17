@@ -127,7 +127,13 @@ def _resolve_zsw(
             section=scale_section,
             nonzero=True,
         ),
-        _resolve_plane_values("weight", arr, weight, section=scale_section),
+        _resolve_plane_values(
+            "weight",
+            arr,
+            weight,
+            section=scale_section,
+            nonzero=True,
+        ),
     )
 
 

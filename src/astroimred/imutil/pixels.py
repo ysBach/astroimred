@@ -16,6 +16,86 @@ __all__ = [
 ]
 
 
+def _fixpix_axis_span(mask: np.ndarray, pos: tuple[int, ...], axis: int):
+    start = pos[axis]
+    probe = list(pos)
+    while start > 0:
+        probe[axis] = start - 1
+        if not mask[tuple(probe)]:
+            break
+        start -= 1
+
+    stop = pos[axis]
+    probe[axis] = stop
+    last_axis_index = mask.shape[axis] - 1
+    while stop < last_axis_index:
+        probe[axis] = stop + 1
+        if not mask[tuple(probe)]:
+            break
+        stop += 1
+
+    return start, stop, stop - start + 1
+
+
+def _fixpix_interpolate_span(
+    data: np.ndarray,
+    naxis: tuple[int, ...],
+    pos: tuple[int, ...],
+    interp_ax: int,
+    start: int,
+    stop: int,
+) -> None:
+    init = start - 1
+    last = stop + 1
+    delta = last - init
+
+    if init < 0 and last >= naxis[interp_ax]:
+        return
+    if init < 0:
+        init = last
+    elif last >= naxis[interp_ax]:
+        last = init
+
+    coord_init = list(pos)
+    coord_last = list(pos)
+    coord_slice = []
+    for axis, coord in enumerate(pos):
+        if axis == interp_ax:
+            coord_init[axis] = init
+            coord_last[axis] = last
+            coord_slice.append(slice(start, stop + 1))
+        else:
+            coord_slice.append(slice(coord, coord + 1))
+
+    val_init = data.item(tuple(coord_init))
+    val_last = data.item(tuple(coord_last))
+    grid = np.arange(1, delta, 1)
+    data[tuple(coord_slice)].flat = (val_last - val_init) / delta * grid + val_init
+
+
+def _fixpix_run_spans(
+    data: np.ndarray,
+    mask: np.ndarray,
+    priority: tuple[int, ...],
+) -> None:
+    naxis = data.shape
+
+    for flat_pos in np.flatnonzero(mask):
+        pos = tuple(int(item) for item in np.unravel_index(flat_pos, naxis))
+        spans = [_fixpix_axis_span(mask, pos, axis) for axis in range(data.ndim)]
+        min_length = min(length for _, _, length in spans)
+        interp_axes = {
+            axis for axis, (_, _, length) in enumerate(spans) if length == min_length
+        }
+        for axis in priority:
+            if axis in interp_axes:
+                interp_ax = axis
+                break
+
+        start, stop, _ = spans[interp_ax]
+        _fixpix_interpolate_span(data, naxis, pos, interp_ax, start, stop)
+
+
 def fixpix(
     ccd: FITSLike,
     mask: FITSLike | None = None,
@@ -68,6 +148,26 @@ def fixpix(
     >>> %timeit air.fixpix(data, mask)
     19.7 ms +- 1.53 ms per loop (mean +- std. dev. of 7 runs, 100 loops each)
 
+    Same benchmark on MBP 14" [2024, macOS 26.4.1,
+    M4Pro(8P+4E/G20c/N16c/48G)], 2026-05-27:
+
+    >>> rng = np.random.default_rng(123)
+    >>> data = rng.normal(size=(1000, 1000))
+    >>> mask = np.zeros_like(data, dtype=bool)
+    >>> mask[10, 10] = True
+    >>> %timeit air.fixpix(data, mask)
+    8.55 ms ± 124 µs per loop (7 runs, 20 loops each)
+
+    Same M4Pro benchmark after run-span interpolation was added:
+
+    >>> %timeit air.fixpix(data, mask, update_header=False, verbose=False)
+    166 µs ± 8 µs per loop (5 runs, 200 loops each)
+
+    >>> mask100 = np.zeros_like(data, dtype=bool)
+    >>> mask100.ravel()[::10000] = True
+    >>> %timeit air.fixpix(data, mask100, update_header=False, verbose=False)
+    620 µs ± 25 µs per loop (5 runs, 100 loops each)
+
     >>> print(data[9:12, 9:12], air.fixpix(data, mask)[9:12, 9:12])
     # [[ 1.64164502 -1.00385046 -1.24748504]
     #  [-1.31877621  1.37965928  0.66008966]
@@ -79,15 +179,14 @@ def fixpix(
     if mask is None:
         return ccd.copy()
 
-    _t_start = Time.now()
-
+    if update_header:
+        _t_start = Time.now()
     _ccd, _, _ = _io._parse_image(ccd, extension=extension, force_ccddata=True)
     mask, maskpath, _ = _io._parse_image(
         mask, extension=mask_extension, name=maskpath, force_ccddata=True
     )
-    mask = mask.data.astype(bool)
+    mask = mask.data.astype(bool, copy=False)
     data = _ccd.data
-    naxis = _ccd.shape
 
     if _ccd.shape != mask.shape:
         raise ValueError(
@@ -111,96 +210,10 @@ def fixpix(
             + f"Now it's {priority=}"
         )
 
-    structures = [np.zeros([3] * ndim) for _ in range(ndim)]
-    for i in range(ndim):
-        sls = [[slice(1, 2, None)] * ndim for _ in range(ndim)][0]
-        sls[i] = slice(None, None, None)
-        structures[i][tuple(sls)] = 1
-    # structures[i] is the structure to obtain the num. of connected pix. along axis=i
-
-    pixels = []
-    n_axs = []
-    labels = []
-
-    for structure in structures:
-        from scipy.ndimage import label as ndlabel
-
-        _label, _nlabel = ndlabel(mask, structure=structure)
-        _pixels = {}
-        _n_axs = {}
-        for k in range(1, _nlabel + 1):
-            _label_k = _label == k
-            _pixels[k] = np.where(_label_k)
-            _n_axs[k] = np.count_nonzero(_label_k)
-        labels.append(_label)
-        pixels.append(_pixels)
-        n_axs.append(_n_axs)
-
-    idxs = np.where(mask)
-    for pos in np.array(idxs).T:
-        # The label of this position in each axis
-        label_pos = [lab.item(*pos) for lab in labels]
-        # number of pixels of the same label for each direction
-        n_ax = [_n_ax[lab] for _n_ax, lab in zip(n_axs, label_pos, strict=False)]
-
-        # The shortest axis along which the interpolation will happen,
-        # OR, if 1+ directions having same minimum length, select this axis
-        #   according to `priority`
-        interp_ax = np.where(n_ax == np.min(n_ax))[0]
-        if len(interp_ax) > 1:
-            for i_ax in priority:  # check in the identical order to `priority`
-                if i_ax in interp_ax:
-                    interp_ax = i_ax
-                    break
-        else:
-            interp_ax = interp_ax[0]
-        # The coordinates of the pixels having the identical label to this
-        # pixel position, along the shortest axis
-        coord_samelabel = pixels[interp_ax][label_pos[interp_ax]]
-        coord_slice = []
-        coord_init = []
-        coord_last = []
-        for i in range(ndim):
-            invalid = False
-            if i == interp_ax:
-                init = np.min(coord_samelabel[i]) - 1
-                last = np.max(coord_samelabel[i]) + 1
-                # distance between the initial/last points to be used for the
-                # interpolation, along the interpolation axis:
-                delta = last - init
-                # grid for interpolation:
-                grid = np.arange(1, delta - 0.1, 1)
-                # Slice to be used for interpolation:
-                sl = slice(init + 1, last, None)
-                # Should be done here, BEFORE the if clause below.
-
-                # Check if lower/upper are all outside the image
-                if init < 0 and last >= naxis[i]:
-                    invalid = True
-                    break
-                elif init < 0:  # if only one of lower/upper is outside the image
-                    init = last
-                elif last >= naxis[i]:
-                    last = init
-            else:
-                init = coord_samelabel[i][0]
-                last = coord_samelabel[i][0]
-                # coord_samelabel[i] is nothing but an array of same numbers
-                sl = slice(init, last + 1, None)
-
-            coord_init.append(init)
-            coord_last.append(last)
-            coord_slice.append(sl)
-
-        if not invalid:
-            val_init = data.item(tuple(coord_init))
-            val_last = data.item(tuple(coord_last))
-            data[tuple(coord_slice)].flat = (
-                val_last - val_init
-            ) / delta * grid + val_init
+    nfix = np.count_nonzero(mask)
+    _fixpix_run_spans(data, mask, priority)
 
     if update_header:
-        nfix = np.count_nonzero(mask)
         _ccd.header["MASKNPIX"] = (nfix, "No. of pixels masked (fixed) by fixpix.")
         _ccd.header["MASKFILE"] = (maskpath, "Applied mask for fixpix.")
         _ccd.header["MASKORD"] = (
