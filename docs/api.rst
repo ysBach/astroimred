@@ -32,7 +32,6 @@ API Reference
    astroimred.logging
    astroimred.reduction
    astroimred.reduction.cli
-   astroimred.reduction.combutil
    astroimred.reduction.crrej
    astroimred.reduction.preproc
 

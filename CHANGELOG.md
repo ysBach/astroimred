@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.3.0 - 2026-06-18
+
+- Migrated aperture photometry and image combination to the `astroapers` and `imcombiners` backends; deprecated `combutil`.
+- Added linear WCS helper functions (`local_cd_matrix`, `make_linear_wcs`, `make_zoomed_wcs`).
+- Performance improvements: cached regex, `fitsio`-preferred I/O, and perf for `bin_ccd` and `sep`-based extraction.
+- Unified logging across the package.
+- Large-scale internal reorganization and type-hint cleanup.
+- [breaking] Removed FWHM-based aperture initialization.
+
 ## 0.2.0 - 2026-05-07
 
 - Bumped to v0.2.0.

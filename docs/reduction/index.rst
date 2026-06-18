@@ -10,5 +10,4 @@ FITS image-in/image-out preprocessing and reduction utilities.
    api/astroimred.reduction
    api/crrej
    api/preproc
-   api/combutil
    api/cli
