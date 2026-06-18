@@ -15,7 +15,16 @@ from astropy.wcs import WCS, Wcsprm
 from .._core.types import HDUExt, HDULike, StrPathLike
 from ..logging import logger
 
-__all__ = ["wcs_crota", "center_radec", "fov_radius", "wcsremove", "pixel_scale"]
+__all__ = [
+    "wcs_crota",
+    "center_radec",
+    "fov_radius",
+    "wcsremove",
+    "pixel_scale",
+    "local_cd_matrix",
+    "make_linear_wcs",
+    "make_zoomed_wcs",
+]
 
 
 @lru_cache(maxsize=32)
@@ -534,3 +543,141 @@ def pixel_scale(
         return pscale
 
     return (pscale << u.rad).to(unit)
+
+
+def local_cd_matrix(wcs: WCS, x0: float, y0: float, step: float = 1e-3) -> np.ndarray:
+    """Estimate the local CD matrix (deg/pixel) of a WCS at one pixel position.
+
+    Computes the CD matrix by finite-differencing ``wcs.all_pix2world`` at
+    ``(x0, y0)``, ``(x0 + step, y0)``, and ``(x0, y0 + step)``. This is useful
+    for building a small linear WCS that is tangent to a larger (possibly
+    non-linear, e.g. SIP-distorted) WCS at one point -- for example, to set
+    up a common output grid centered on a moving target's position in each
+    of several input frames before reprojecting them onto it.
+
+    Note the result is the Jacobian of RA/Dec (not of the cos(dec)-corrected
+    tangent-plane coordinates) with respect to pixel position, evaluated by
+    direct finite differencing. Away from `dec=0`, this generally differs
+    from `wcs.wcs.cd` itself (when `wcs` happens to already be a linear TAN
+    WCS) by the local `cos(dec)` factor relating RA to angular distance --
+    that is expected, not a bug; see `make_linear_wcs` for the matrix this
+    function's output is meant to feed into.
+
+    Parameters
+    ----------
+    wcs : `astropy.wcs.WCS`
+        The WCS to linearize.
+    x0, y0 : float
+        Pixel position (0-indexed, in `wcs`'s pixel convention) at which to
+        evaluate the local CD matrix.
+    step : float, optional
+        Finite-difference step size in pixels. Default is ``1e-3``.
+
+    Returns
+    -------
+    cd : `numpy.ndarray`
+        2x2 CD matrix in deg/pixel, ordered as
+        ``[[dRA/dx, dRA/dy], [dDec/dx, dDec/dy]]``, with the RA terms already
+        corrected for wraparound at the 0/360 deg boundary.
+    """
+    ra0, dec0 = wcs.all_pix2world(x0, y0, 0)
+
+    ra_dx, dec_dx = wcs.all_pix2world(x0 + step, y0, 0)
+    ra_dy, dec_dy = wcs.all_pix2world(x0, y0 + step, 0)
+
+    def _dra(a: float, b: float) -> float:
+        d = a - b
+        if d > 180:
+            d -= 360
+        elif d < -180:
+            d += 360
+        return d
+
+    cd = np.array(
+        [
+            [_dra(ra_dx, ra0) / step, _dra(ra_dy, ra0) / step],
+            [(dec_dx - dec0) / step, (dec_dy - dec0) / step],
+        ]
+    )
+
+    return cd
+
+
+def make_linear_wcs(
+    cd: np.ndarray,
+    shape: tuple[int, int],
+    crval: tuple[float, float] = (0.0, 0.0),
+    crpix: np.ndarray | tuple[float, float] | None = None,
+) -> WCS:
+    """Create a purely linear (no SIP) TAN WCS from a CD matrix.
+
+    Parameters
+    ----------
+    cd : array-like
+        2x2 CD matrix in deg/pixel, as produced by `local_cd_matrix`.
+    shape : tuple of int
+        ``(ny, nx)`` of the image this WCS describes. Used only to pick a
+        default `crpix` (the image center) when `crpix` is not given.
+    crval : tuple of float, optional
+        ``(CRVAL1, CRVAL2)`` in degrees. Default is ``(0.0, 0.0)``.
+    crpix : array-like, optional
+        ``(CRPIX1, CRPIX2)`` in the WCS's 1-indexed pixel convention. If
+        `None` (default), defaults to the image center,
+        ``(nx / 2, ny / 2)``.
+
+    Returns
+    -------
+    w : `astropy.wcs.WCS`
+        A 2-D WCS with ``CTYPE = ("RA---TAN", "DEC--TAN")`` and no
+        distortion terms.
+    """
+    ny, nx = shape
+
+    w = WCS(naxis=2)
+    w.wcs.crpix = [nx / 2, ny / 2] if crpix is None else list(crpix)
+    w.wcs.crval = list(crval)
+    w.wcs.cd = cd
+    w.wcs.ctype = ["RA---TAN", "DEC--TAN"]
+
+    return w
+
+
+def make_zoomed_wcs(
+    wcs_ref: WCS, shape: tuple[int, int], zoom: float
+) -> tuple[WCS, tuple[int, int]]:
+    """Resample a linear WCS onto a finer pixel grid covering the same sky.
+
+    Returns a new WCS and shape describing the same on-sky footprint as
+    `wcs_ref`/`shape`, but sampled `zoom` times finer per axis. Uses the
+    edge-aligned affine map ``x' = zoom * (x - 0.5) + 0.5`` applied to CRPIX
+    (FITS 1-indexed convention throughout), which keeps pixel-grid *edges*
+    (not just centers) aligned between the two grids -- important when the
+    zoomed grid will be compared pixel-by-pixel against data resampled
+    separately onto the same nominal footprint.
+
+    Parameters
+    ----------
+    wcs_ref : `astropy.wcs.WCS`
+        Reference WCS. Must be linear (i.e. have a usable ``wcs.cd`` and
+        ``wcs.crpix``), such as one returned by `make_linear_wcs`.
+    shape : tuple of int
+        ``(ny, nx)`` of the reference grid.
+    zoom : int or float
+        Linear oversampling factor (e.g. ``zoom=4`` gives 4x finer pixels
+        along each axis).
+
+    Returns
+    -------
+    wcs_zoom : `astropy.wcs.WCS`
+        The zoomed WCS.
+    shape_zoom : tuple of int
+        ``(ny * zoom, nx * zoom)``.
+    """
+    ny, nx = shape
+    shape_zoom = (int(ny * zoom), int(nx * zoom))
+    cd_zoom = wcs_ref.wcs.cd / zoom
+    crpix_zoom = zoom * (np.asarray(wcs_ref.wcs.crpix) - 0.5) + 0.5
+    wcs_zoom = make_linear_wcs(
+        cd_zoom, shape_zoom, crval=wcs_ref.wcs.crval, crpix=crpix_zoom
+    )
+    return wcs_zoom, shape_zoom
