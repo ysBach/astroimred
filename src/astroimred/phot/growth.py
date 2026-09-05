@@ -60,7 +60,7 @@ def _profile_exp(r, flux=1, r0=1):
 
 def _profile_moffat_i(r, flux, width=1, power=1):
     """The 2-pi-r integrated Moffat profile. See _profile_moffat."""
-    return flux * (1 - 1 / (1 + r**2) ** (power - 1))
+    return flux * (1 - 1 / (1 + (r / width) ** 2) ** (power - 1))
 
 
 def _profile_gauss_i(r, flux, sigma=1):
