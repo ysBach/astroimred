@@ -56,14 +56,59 @@ def errormap(
     dark_std_min: float | str = "rdnoise",
     return_variance: bool = False,
 ) -> np.ndarray:
-    """Calculate the detailed pixel-wise error map in ADU unit.
+    r"""Propagate independent detector and calibration errors through a flat.
 
-    ``ccd_biassub`` is now intentionally accepted as either `~numpy.ndarray` or
-    path-like FITS input. For CCDData/HDU inputs, pass their `.data` explicitly.
+    Parameters
+    ----------
+    ccd_biassub : ndarray or path-like
+        Bias-subtracted signal D in ADU, before flat division. If a dark was
+        subtracted, D must be the dark-subtracted signal and `subtracted_dark`
+        must contain the removed counts. For CCDData/HDU input, pass `.data`.
+    gain_epadu : float or Quantity, optional
+        Detector gain g in electrons per ADU.
+    rdnoise_electron : float or Quantity, optional
+        Science-exposure read noise R in electrons.
+    subtracted_dark : float or ndarray, optional
+        Removed dark counts in pre-flat ADU. Restores their science-exposure
+        Poisson noise; this is distinct from dark-calibration uncertainty.
+    flat : float or ndarray, optional
+        Dimensionless divisor F. Use 1 for no flat division. An already
+        flat-divided signal must first be multiplied by its original F.
+    dark_std : float or ndarray, optional
+        Independent uncertainty s_D of the subtracted dark calibration in
+        pre-flat ADU, after any exposure scaling. Excludes science-exposure
+        Poisson and read noise, which are included separately.
+    flat_err : float or ndarray, optional
+        Absolute uncertainty s_F of F. Zero treats the flat as exact but
+        still propagates detector noise through division by F.
+    dark_std_min : float or str, optional
+        Floor applied to ndarray `dark_std`. ``"rdnoise"`` means R/g.
+        Scalar `dark_std` is used as supplied, retaining the zero default
+        when no dark-calibration uncertainty is requested.
+    return_variance : bool, optional
+        Return variance in ADU squared instead of standard deviation in ADU.
+
+    Returns
+    -------
+    ndarray
+        Variance or standard deviation of D/F.
+
+    Notes
+    -----
+    Assuming independent noise sources, the variance is
+
+    .. math::
+
+        V = \frac{\max(D + D_{dark}, 0)/g + s_D^2 + (R/g)^2}{F^2}
+            + \left(\frac{D s_F}{F^2}\right)^2.
+
+    Only the estimated Poisson counts are clipped to zero; negative D still
+    contributes to flat-calibration uncertainty. F must be nonzero.
     """
     data, _ = _data_header_from_array_or_path(ccd_biassub)
-    data = np.array(data, copy=True)
-    data[data < 0] = 0  # make all negative pixel to 0
+    data = np.asarray(data, dtype=np.result_type(data.dtype, np.float64))
+    flat = np.asarray(flat, dtype=np.result_type(flat, np.float64))
+    poisson = np.maximum(data + subtracted_dark, 0)
 
     if isinstance(gain_epadu, u.Quantity):
         gain_epadu = gain_epadu.to(u.electron / u.adu).value
@@ -78,15 +123,15 @@ def errormap(
     if dark_std_min == "rdnoise":
         dark_std_min = rdnoise_electron / gain_epadu
     if isinstance(dark_std, np.ndarray):
-        dark_std[dark_std < dark_std_min] = dark_std_min
+        dark_std = np.maximum(dark_std, dark_std_min)
 
     # Calculate the full variance map
     # restore dark for Poisson term calculation
     if HAS_NE:
         eval_str = (
-            "(data + subtracted_dark)/(gain_epadu*flat**2)"
+            "poisson/(gain_epadu*flat**2)"
             "+ (dark_std/flat)**2"
-            "+ data**2*(flat_err/flat)**2"
+            "+ (data*flat_err/flat**2)**2"
             "+ (rdnoise_electron/(gain_epadu*flat))**2"
         )
         if return_variance:
@@ -95,9 +140,9 @@ def errormap(
             return ne.evaluate(f"sqrt({eval_str})")
     else:
         variance = (
-            (data + subtracted_dark) / (gain_epadu * flat**2)
+            poisson / (gain_epadu * flat**2)
             + (dark_std / flat) ** 2
-            + data**2 * (flat_err / flat) ** 2
+            + (data * flat_err / flat**2) ** 2
             + (rdnoise_electron / (gain_epadu * flat)) ** 2
         )
         if return_variance:
