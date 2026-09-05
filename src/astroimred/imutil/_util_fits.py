@@ -650,6 +650,16 @@ def extract_stack_metadata(
     }
 
 
+def _expand_chunk_slices(
+    chunk: tuple[slice, ...], shape: tuple[int, ...], halo: int
+) -> tuple[slice, ...]:
+    """Include spatial neighbors needed for growth, clipped at image edges."""
+    return tuple(
+        slice(max(0, sl.start - halo), min(size, sl.stop + halo))
+        for sl, size in zip(chunk, shape, strict=True)
+    )
+
+
 def check_stack_memory(
     ncombine: int,
     sh_comb: tuple[int, ...],
@@ -662,6 +672,8 @@ def check_stack_memory(
     full: bool = False,
     reject: str | None = None,
     thresholds: bool = False,
+    sample_flags: bool = False,
+    halo: int = 0,
 ) -> tuple[float, int, list[tuple[slice, ...]]]:
     """Plan input sections from the estimated memory needed for combination.
 
@@ -696,6 +708,10 @@ def check_stack_memory(
         Normalized rejection name, determining which diagnostics are retained.
     thresholds : `bool`, optional
         Whether a threshold mask is requested.
+    sample_flags : `bool`, optional
+        Reserve detailed diagnostics, including one byte per input sample.
+    halo : `int`, optional
+        Additional pixels read on each side of a chunk for rejection growth.
 
     Returns
     -------
@@ -716,7 +732,7 @@ def check_stack_memory(
     pixels = prod(sh_comb)
     itemsize = np.result_type(np.dtype(dtype), np.nan).itemsize
     persistent = pixels * np.dtype(dtype).itemsize  # final combined image
-    if full:
+    if full or sample_flags:
         persistent += pixels * ncombine  # total mask, one bool per input sample
         if thresholds:
             persistent += pixels * ncombine  # threshold mask
@@ -725,11 +741,15 @@ def check_stack_memory(
             persistent += pixels * (2 * itemsize + 2)  # bounds + uint8 counts/flags
             if reject in {"sigclip", "ccdclip"}:
                 persistent += pixels * itemsize  # clipping standard deviation
+        if sample_flags:
+            persistent += pixels * ncombine  # uint8 sample provenance
 
     # Preserve the original approximate workspace allowance. Only the stack
     # region shrinks with chunking; the output allocation above does not.
     memory_factor = 4.5 if str(combine).lower() in {"med", "median"} else 3.0
-    bytes_per_sample = memory_factor * itemsize
+    # Growth also needs temporary sample flags to distinguish true rejection
+    # seeds from pre-existing exclusions, even when flags are not returned.
+    bytes_per_sample = memory_factor * itemsize + int(sample_flags or halo > 0)
     temporary_pixel = ncombine * bytes_per_sample
     mem_req = float(persistent + pixels * temporary_pixel)
     full_chunk = tuple(slice(0, size) for size in sh_comb)
@@ -743,13 +763,22 @@ def check_stack_memory(
             f"({persistent} bytes) plus a FITS chunk. Increase memlimit or "
             "disable full/diagnostic outputs."
         )
-    if offsets is not None and shapes is not None:
+    if halo or (offsets is not None and shapes is not None):
         chunks = _plan_offset_chunks(
             full_chunk=full_chunk,
-            offsets=np.asarray(offsets, dtype=int),
-            shapes=np.asarray(shapes, dtype=int),
+            offsets=(
+                np.zeros((ncombine, len(sh_comb)), dtype=int)
+                if offsets is None
+                else np.asarray(offsets, dtype=int)
+            ),
+            shapes=(
+                np.broadcast_to(sh_comb, (ncombine, len(sh_comb)))
+                if shapes is None
+                else np.asarray(shapes, dtype=int)
+            ),
             bytes_per_sample=bytes_per_sample,
             memlimit=available,
+            halo=halo,
         )
         return mem_req, len(chunks), chunks
 
@@ -785,10 +814,12 @@ def _plan_offset_chunks(
     *,
     bytes_per_sample: float,
     memlimit: float,
+    halo: int = 0,
 ) -> list[tuple[slice, ...]]:
     """Return offset-aware chunks whose active stack estimates fit memory."""
 
     def chunk_memory(chunk: tuple[slice, ...]) -> float:
+        chunk = _expand_chunk_slices(chunk, tuple(sl.stop for sl in full_chunk), halo)
         starts = np.array([sl.start for sl in chunk])
         stops = np.array([sl.stop for sl in chunk])
         image_stops = offsets + shapes
@@ -1265,6 +1296,9 @@ def write_imcombine_outputs(
     output_verify: str,
     overwrite: bool,
     checksum: bool,
+    *,
+    output_sample_flags: StrPathLike | None = None,
+    sample_flags: np.ndarray | None = None,
 ) -> None:
     """Write the main combined image and any requested diagnostic FITS files.
 
@@ -1322,3 +1356,12 @@ def write_imcombine_outputs(
                 "output_flags_data is required when output_flags is requested."
             )
         write2fits(output_flags_data, hdr0, output_flags, return_ccd=False, **write_kw)
+
+    if output_sample_flags is not None:
+        if sample_flags is None:
+            raise ValueError(
+                "sample_flags is required when output_sample_flags is requested."
+            )
+        write2fits(
+            sample_flags, hdr0, output_sample_flags, return_ccd=False, **write_kw
+        )
