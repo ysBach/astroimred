@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
+from math import prod
 from pathlib import Path
 from typing import Any
 
@@ -22,7 +23,7 @@ from astropy.wcs import WCS
 
 from astroimred._core.types import HDUExt, StrPathLike
 from astroimred.fitsmgmt.header import update_tlm
-from astroimred.fitsmgmt.io import _parse_data_header, load_ccd, write2fits
+from astroimred.fitsmgmt.io import _parse_data_header, write2fits
 from astroimred.logging import logger
 
 Key_or_Val = str | npt.ArrayLike | None
@@ -85,7 +86,16 @@ def _resolve_plane_values(
         fill = 1.0 if nonzero else 0.0
         return np.full(arr.shape[0], fill, dtype=float)
 
-    workspace = _stat_workspace(np.asarray(arr), section)
+    if isinstance(value, str) or callable(value):
+        workspace = _stat_workspace(np.asarray(arr), section)
+        # The resolver casts its result to the workspace dtype. Integer image
+        # storage must not truncate fractional statistics such as the mean.
+        workspace = workspace.astype(
+            np.result_type(workspace.dtype, np.nan), copy=False
+        )
+    else:
+        # Numeric calibration values are independent of the stored pixel dtype.
+        workspace = np.empty((arr.shape[0], 1, 1), dtype=float)
     resolved = imc.resolve_zero_scale(
         name,
         _normalize_stat_name(value),
@@ -135,6 +145,20 @@ def _resolve_zsw(
             nonzero=True,
         ),
     )
+
+
+def _image_parameter(name: str, value: Key_or_Val, index: int, ncombine: int) -> Any:
+    """Select one image's numeric value; leave statistics for the image loader.
+
+    A scalar applies to every image. A vector must have one entry per input,
+    even though the statistic resolver receives only one image at a time.
+    """
+    if value is None or isinstance(value, str) or callable(value):
+        return value
+    values = np.asarray(value).reshape(-1)
+    if values.size not in (1, ncombine):
+        raise ValueError(f"{name} length must be 1 or match the number of images.")
+    return values[0 if values.size == 1 else index]
 
 
 def _expand_ccdclip_parameter(
@@ -203,16 +227,16 @@ def _compose_trim_data_slices(
         raw_shape, trim_slices, data_slices, strict=False
     ):
         t_start, _t_stop, t_step = trim_slice.indices(int(raw_size))
-        if t_step <= 0:
-            raise ValueError("Negative-step trimsec is not supported in chunked load.")
-
         trimmed_size = len(range(*trim_slice.indices(int(raw_size))))
         d_start, d_stop, d_step = data_slice.indices(trimmed_size)
         if d_step != 1:
             raise ValueError("Non-unit chunk slice steps are not supported.")
-        slices.append(
-            slice(t_start + d_start * t_step, t_start + d_stop * t_step, t_step)
-        )
+        stop = t_start + d_stop * t_step
+        # A negative stop is relative to the raw array's end. For a reverse
+        # slice reaching pixel zero, use None to mean before the array begins.
+        if t_step < 0 and stop < 0:
+            stop = None
+        slices.append(slice(t_start + d_start * t_step, stop, t_step))
     return tuple(slices)
 
 
@@ -272,8 +296,19 @@ def _parse_imc_data_header(
 ) -> tuple[np.ndarray | None, fits.Header | None]:
     """Parse data/header while applying imcombine's image-HDU fallback.
 
-    Returns (data, header) where one or both may be `None` if the requested
+    Unrequested parts are `None`. For `CCDData`, a private header receives
+    dimensions from the array, since its metadata need not contain FITS cards.
     """
+    if isinstance(item, CCDData):
+        data = (item.data.copy() if copy else item.data) if parse_data else None
+        header = None
+        if parse_header:
+            header = fits.Header(item.header)
+            header["NAXIS"] = item.data.ndim
+            for axis, size in enumerate(reversed(item.data.shape), start=1):
+                header[f"NAXIS{axis}"] = size
+        return data, header
+
     try:
         path = Path(item)
     except TypeError:
@@ -442,8 +477,8 @@ def extract_stack_metadata(
 
     This is the metadata-only prepass for ``imcombine``. It determines the
     dimensionality, raw and trimmed image shapes, requested offset convention,
-    exposure scaling, and CCD-noise keywords needed for ``ccdclip``. It avoids
-    loading image data unless no header parsing is otherwise needed.
+    exposure scaling, and CCD-noise keywords needed for ``ccdclip``. FITS paths
+    are inspected through headers without loading image pixels.
 
     Returns
     -------
@@ -506,7 +541,9 @@ def extract_stack_metadata(
 
     for i, item in enumerate(items):
         if extract_hdr:
-            _, hdr = _parse_imc_data_header(item, extension=extension, copy=False)
+            _, hdr = _parse_imc_data_header(
+                item, extension=extension, parse_data=False, copy=False
+            )
             if hdr is None:
                 raise ValueError(f"Could not read header from input {i}.")
             if imcmb_key not in [None, ""]:
@@ -572,7 +609,7 @@ def extract_stack_metadata(
                 Path(item)
             except TypeError:
                 data = _parse_imc_data_header(
-                    item, extension=extension, parse_header=False
+                    item, extension=extension, parse_header=False, copy=False
                 )[0]
                 if data is None:
                     raise ValueError(f"Could not read data from input {i}.") from None
@@ -618,6 +655,16 @@ def extract_stack_metadata(
     }
 
 
+def _expand_chunk_slices(
+    chunk: tuple[slice, ...], shape: tuple[int, ...], halo: int
+) -> tuple[slice, ...]:
+    """Include spatial neighbors needed for growth, clipped at image edges."""
+    return tuple(
+        slice(max(0, sl.start - halo), min(size, sl.stop + halo))
+        for sl, size in zip(chunk, shape, strict=True)
+    )
+
+
 def check_stack_memory(
     ncombine: int,
     sh_comb: tuple[int, ...],
@@ -626,98 +673,142 @@ def check_stack_memory(
     memlimit: float | None,
     offsets: np.ndarray | None = None,
     shapes: np.ndarray | None = None,
+    *,
+    full: bool = False,
+    reject: str | None = None,
+    thresholds: bool = False,
+    sample_flags: bool = False,
+    halo: int = 0,
 ) -> tuple[float, int, list[tuple[slice, ...]]]:
-    """Estimate stack memory and return the output chunks to process.
+    """Plan input sections from the estimated memory needed for combination.
+
+    Before loading the full input stack, estimate the memory for that stack,
+    temporary computation buffers, and retained outputs. If the estimate exceeds
+    `memlimit`, choose spatial sections to read and combine one at a time.
+    The final image and diagnostic arrays stay in memory for every chunk, so
+    subtract their sizes first. Divide the remaining budget by the estimated
+    input and working bytes per pixel to choose how much of each image to read.
 
     Parameters
     ----------
-    ncombine : int
+    ncombine : `int`
         Number of input images.
-    sh_comb : tuple of int
-        Final output image shape after offsets are applied.
+    sh_comb : `tuple` of `int`
+        Final output shape after offsets.
     dtype : dtype-like
-        Temporary stack dtype.
-    combine : str
-        Combine method; median-like combines need a larger working factor.
-    memlimit : float or None
-        Approximate byte limit. Non-positive or `None` disables chunking.
-    offsets, shapes : ndarray, optional
-        Normalized image origins and shapes in NumPy axis order. When supplied,
-        chunk planning estimates the active stack depth in each output chunk
-        instead of assuming all input images overlap every output pixel.
+        Output dtype. Integer outputs use a floating workspace to hold NaNs.
+    combine : `str`
+        Combine method. The legacy working-memory estimate uses 4.5 times the
+        input stack size for median, and 3 times for other methods. These are
+        rough allowances, not measured bounds for the current backend.
+    memlimit : `float` or `None`
+        Approximate budget in bytes for loaded input sections, temporary
+        computation buffers, and retained output arrays. `None` or non-positive
+        values disable chunking. This is not a process RSS limit.
+    offsets, shapes : `~numpy.ndarray`, optional
+        Normalized origins and image shapes, used to count active chunk planes.
+    full : `bool`, optional
+        Reserve the full diagnostic outputs as well as the combined image.
+    reject : `str` or `None`, optional
+        Normalized rejection name, determining which diagnostics are retained.
+    thresholds : `bool`, optional
+        Whether a threshold mask is requested.
+    sample_flags : `bool`, optional
+        Reserve detailed diagnostics, including one byte per input sample.
+    halo : `int`, optional
+        Additional pixels read on each side of a chunk for rejection growth.
 
     Returns
     -------
-    mem_req : float
-        Estimated full-stack memory requirement in bytes.
-    num_chunk : int
-        Number of chunks. One means the full-stack path can be used.
-    chunks : list of tuple of slice
-        Output-image slices to process. FITS row slabs are preferred so the
-        fastest-reading axis stays contiguous whenever possible.
-    """
-    # Size of (N+1)-D array before combining along axis=0
-    stacksize = float(np.prod((ncombine, *sh_comb)) * np.dtype(dtype).itemsize)
-    # size estimated by full-stacked array (1st term) plus combined image
-    # (1/ncombine), low and upp bounds (each 1/ncombine), mask (bool8),
-    # niteration (int8), and code(int8). temp_arr_size = stacksize*(1 +
-    # 1/ncombine*4)
+    mem_req : `float`
+        Estimated bytes to load and combine all inputs at once, including
+        temporary computation buffers and retained outputs.
+    num_chunk : `int`
+        Number of output chunks.
+    chunks : `list` of `tuple` of `slice`
+        Output sections, with contiguous FITS slabs preferred.
 
-    # Copied from ccdproc v 2.0.1
-    # https://github.com/astropy/ccdproc/blob/b9ec64dfb59aac1d9ca500ad172c4eb31ec305f8/ccdproc/combiner.py#L710
-    # Set a memory use factor based on profiling
-    combine_key = str(combine).lower()
-    memory_factor = 3.0 if combine_key in {"med", "median"} else 2.0
-    memory_factor *= 1.5
-    mem_req = memory_factor * stacksize
+    Notes
+    -----
+    Caller-owned data, FITS decoding, full-image zero/scale statistics, output
+    serialization, and backend/thread scratch are outside this estimate.
+    Diagnostic masks always reserve all input planes, including sparse offsets.
+    """
+    pixels = prod(sh_comb)
+    itemsize = np.result_type(np.dtype(dtype), np.nan).itemsize
+    persistent = pixels * np.dtype(dtype).itemsize  # final combined image
+    if full or sample_flags:
+        persistent += pixels * ncombine  # total mask, one bool per input sample
+        if thresholds:
+            persistent += pixels * ncombine  # threshold mask
+        if reject is not None and str(reject).lower() != "none":
+            persistent += pixels * ncombine  # rejection mask
+            persistent += pixels * (2 * itemsize + 2)  # bounds + uint8 counts/flags
+            if reject in {"sigclip", "ccdclip"}:
+                persistent += pixels * itemsize  # clipping standard deviation
+        if sample_flags:
+            persistent += pixels * ncombine  # uint8 sample provenance
+
+    # Preserve the original approximate workspace allowance. Only the stack
+    # region shrinks with chunking; the output allocation above does not.
+    memory_factor = 4.5 if str(combine).lower() in {"med", "median"} else 3.0
+    # Growth also needs temporary sample flags to distinguish true rejection
+    # seeds from pre-existing exclusions, even when flags are not returned.
+    bytes_per_sample = memory_factor * itemsize + int(sample_flags or halo > 0)
+    temporary_pixel = ncombine * bytes_per_sample
+    mem_req = float(persistent + pixels * temporary_pixel)
     full_chunk = tuple(slice(0, size) for size in sh_comb)
     if memlimit is None or memlimit <= 0 or mem_req <= memlimit:
         return mem_req, 1, [full_chunk]
 
-    if offsets is not None and shapes is not None:
+    available = memlimit - persistent
+    if available <= 0:
+        raise ValueError(
+            f"memlimit ({memlimit:g} bytes) cannot hold persistent outputs "
+            f"({persistent} bytes) plus a FITS chunk. Increase memlimit or "
+            "disable full/diagnostic outputs."
+        )
+    if halo or (offsets is not None and shapes is not None):
         chunks = _plan_offset_chunks(
             full_chunk=full_chunk,
-            offsets=np.asarray(offsets, dtype=int),
-            shapes=np.asarray(shapes, dtype=int),
-            dtype=dtype,
-            memory_factor=memory_factor,
-            memlimit=memlimit,
+            offsets=(
+                np.zeros((ncombine, len(sh_comb)), dtype=int)
+                if offsets is None
+                else np.asarray(offsets, dtype=int)
+            ),
+            shapes=(
+                np.broadcast_to(sh_comb, (ncombine, len(sh_comb)))
+                if shapes is None
+                else np.asarray(shapes, dtype=int)
+            ),
+            bytes_per_sample=bytes_per_sample,
+            memlimit=available,
+            halo=halo,
         )
         return mem_req, len(chunks), chunks
 
-    # FITS stores the last Python axis contiguously.  Prefer chunking the first
-    # image axis so each read keeps the full fast axis and stays row-slab-like
-    # for normal 2-D images.  If one row slab is still too large, move toward
-    # the fast axis until at least one section fits.
-    chunk_axis = None
-    chunk_size = None
-    min_required = float("inf")
+    # Preserve full fast axes when a slab fits. Otherwise bisect dimensions
+    # until even multidimensional small-budget chunks can be represented.
     for axis in range(len(sh_comb)):
-        fast_shape = sh_comb[:axis] + sh_comb[axis + 1 :]
-        bytes_per_axis_pixel = float(
-            memory_factor * ncombine * np.prod(fast_shape) * np.dtype(dtype).itemsize
+        bytes_per_axis_pixel = temporary_pixel * prod(
+            sh_comb[:axis] + sh_comb[axis + 1 :]
         )
-        min_required = min(min_required, bytes_per_axis_pixel)
-        size = int(memlimit // bytes_per_axis_pixel)
+        size = int(available // bytes_per_axis_pixel)
         if size >= 1:
-            chunk_axis = axis
-            chunk_size = size
-            break
+            chunks = []
+            for start in range(0, sh_comb[axis], size):
+                slices = list(full_chunk)
+                slices[axis] = slice(start, min(start + size, sh_comb[axis]))
+                chunks.append(tuple(slices))
+            return mem_req, len(chunks), chunks
 
-    if chunk_axis is None:
-        raise ValueError(
-            "memlimit is too small to hold even one FITS chunk. "
-            + f"Try memlimit > {min_required:.1e}."
-        )
-    assert chunk_size is not None
-
-    chunks = []
-    for start in range(0, sh_comb[chunk_axis], chunk_size):
-        stop = min(start + chunk_size, sh_comb[chunk_axis])
-        slices = [slice(0, size) for size in sh_comb]
-        slices[chunk_axis] = slice(start, stop)
-        chunks.append(tuple(slices))
-
+    chunks = _plan_offset_chunks(
+        full_chunk,
+        np.zeros((ncombine, len(sh_comb)), dtype=int),
+        np.broadcast_to(sh_comb, (ncombine, len(sh_comb))),
+        bytes_per_sample=bytes_per_sample,
+        memlimit=available,
+    )
     return mem_req, len(chunks), chunks
 
 
@@ -725,22 +816,23 @@ def _plan_offset_chunks(
     full_chunk: tuple[slice, ...],
     offsets: np.ndarray,
     shapes: np.ndarray,
-    dtype: npt.DTypeLike,
-    memory_factor: float,
+    *,
+    bytes_per_sample: float,
     memlimit: float,
+    halo: int = 0,
 ) -> list[tuple[slice, ...]]:
     """Return offset-aware chunks whose active stack estimates fit memory."""
-    itemsize = np.dtype(dtype).itemsize
 
     def chunk_memory(chunk: tuple[slice, ...]) -> float:
+        chunk = _expand_chunk_slices(chunk, tuple(sl.stop for sl in full_chunk), halo)
         starts = np.array([sl.start for sl in chunk])
         stops = np.array([sl.stop for sl in chunk])
         image_stops = offsets + shapes
         active = np.count_nonzero(
             np.all(np.minimum(stops, image_stops) > np.maximum(starts, offsets), axis=1)
         )
-        pixels = np.prod([sl.stop - sl.start for sl in chunk])
-        return float(memory_factor * max(active, 1) * pixels * itemsize)
+        pixels = prod(sl.stop - sl.start for sl in chunk)
+        return float(pixels * active * bytes_per_sample)
 
     def split_score(chunk: tuple[slice, ...], axis: int) -> tuple[float, float, int]:
         start = chunk[axis].start
@@ -767,8 +859,9 @@ def _plan_offset_chunks(
         ]
         if not splittable_axes:
             raise ValueError(
-                "memlimit is too small to hold even one FITS chunk. "
-                + f"Try memlimit > {chunk_memory(chunk):.1e}."
+                "Remaining memlimit after persistent outputs is too small for one FITS chunk: "
+                f"{memlimit:g} bytes available, {chunk_memory(chunk):g} bytes needed. "
+                "Increase memlimit."
             )
 
         split_axis = min(splittable_axes, key=lambda axis: split_score(chunk, axis))
@@ -813,27 +906,11 @@ def calculate_zsw(
     zeros = np.zeros(shape=ncombine)
     weights = np.ones(shape=ncombine)
 
-    calc_zero = isinstance(zero, str)
-    calc_scale = isinstance(scale, str) and not extract_exptime
-    calc_weight = isinstance(weight, str)
-
-    if zero is not None and not calc_zero:
-        zeros = np.asarray(zero, dtype=float).ravel()
-        if zeros.size != ncombine:
-            raise ValueError("zero must have size equal to the number of images.")
-
-    if scale is not None and not isinstance(scale, str):
-        scales = np.asarray(scale, dtype=float).ravel()
-        if scales.size != ncombine:
-            raise ValueError("scale must have size equal to the number of images.")
-
-    if weight is not None and not calc_weight:
-        weights = np.asarray(weight, dtype=float).ravel()
-        if weights.size != ncombine:
-            raise ValueError("weight must have size equal to the number of images.")
-
+    needs_data = any(
+        isinstance(value, str) or callable(value)
+        for value in (zero, None if extract_exptime else scale, weight)
+    )
     for i, item in enumerate(items):
-        needs_data = calc_zero or calc_scale or calc_weight
         if needs_data:
             # Preserve the legacy global zero/scale/weight semantics.  These
             # statistics must not be recalculated per chunk.
@@ -844,25 +921,30 @@ def calculate_zsw(
                 extension_mask=extension_mask,
                 extension_uncertainty=extension_uncertainty,
             )
+            workspace = data[None, :]
         else:
-            continue
+            # Numeric arguments only need a plane count and dtype for validation.
+            workspace = np.empty((1, 1, 1), dtype=float)
 
         z_i, s_i, w_i = _resolve_zsw(
-            arr=np.asarray(data[None, :]),  # make a fake (N+1)-D array
-            zero=zero if calc_zero else None,
-            scale=scale if calc_scale else None,
-            weight=weight if calc_weight else None,
+            arr=workspace,
+            zero=_image_parameter("zero", zero, i, ncombine),
+            scale=(
+                scales[i]
+                if extract_exptime
+                else _image_parameter("scale", scale, i, ncombine)
+            ),
+            weight=_image_parameter("weight", weight, i, ncombine),
             zero_kw=zero_kw,
             scale_kw=scale_kw,
-            zero_section=zero_section,
-            scale_section=scale_section,
+            zero_section=zero_section if needs_data else None,
+            scale_section=scale_section if needs_data else None,
         )
-        if calc_zero:
-            zeros[i] = z_i[0]
-        if calc_scale:
-            scales[i] = s_i[0]
-        if calc_weight:
-            weights[i] = w_i[0]
+        zeros[i], scales[i], weights[i] = z_i[0], s_i[0], w_i[0]
+        # Do not keep the previous image alive while reading the next one.
+        del workspace
+        if needs_data:
+            del data, _var, _mask
 
     return zeros, scales, weights
 
@@ -876,32 +958,13 @@ def load_imcombine_item(
 ) -> tuple[np.ndarray, np.ndarray | None, np.ndarray]:
     """Load one complete imcombine input as data, variance, and mask arrays.
 
-    Path-like inputs are delegated to ``astroimred.load_ccd``. CCDData inputs are
-    sliced directly, preserving masks and uncertainty arrays when present.
+    FITS inputs use the same section decoder as chunked reads, so scaling and
+    BLANK-to-NaN conversion agree for every memory budget. CCDData inputs are
+    sliced directly. Uncertainties are copied only when explicitly requested.
     """
     try:
-        data, var, mask, _ = load_ccd(
-            item,
-            trimsec=trimsec,
-            ccddata=False,
-            extension=extension,
-            extension_mask=extension_mask,
-            extension_uncertainty=extension_uncertainty,
-            full=True,
-        )
-        if data is None:
-            data = _parse_imc_data_header(
-                item,
-                extension=extension,
-                parse_header=False,
-            )[0]
-            if data is None:
-                raise ValueError("No image data found in input.")
-            var = None
-            mask = np.zeros(data.shape, dtype=bool)
-        elif mask is None:
-            mask = np.zeros(data.shape, dtype=bool)
-    except TypeError:
+        path = Path(item)
+    except TypeError as err:
         if isinstance(item, CCDData):
             slices = _trim_slices(trimsec, item.data.shape)
             data = item.data[slices].copy()
@@ -911,12 +974,26 @@ def load_imcombine_item(
                 mask = item.mask[slices].copy()
             var = (
                 None
-                if item.uncertainty is None
+                if extension_uncertainty is None or item.uncertainty is None
                 else np.asarray(item.uncertainty.array)[slices].copy()
             )
         else:
-            raise ValueError("Each item is not path-like or CCDData.") from None
+            raise ValueError("Each item is not path-like or CCDData.") from err
+        return data, var, mask
 
+    with fits.open(path, memmap=False) as hdul:
+        hdu = _get_image_hdu(hdul, extension)
+        if hdu is None:
+            raise ValueError(f"No image data found in {path}.")
+        section = _trim_slices(trimsec, hdu.shape)
+        data = _read_hdul_section(hdul, extension, section)
+        var = _read_hdul_section(hdul, extension_uncertainty, section)
+        mask = _read_hdul_section(hdul, extension_mask, section)
+    mask = (
+        np.zeros(data.shape, dtype=bool)
+        if mask is None
+        else mask.astype(bool, copy=False)
+    )
     return data, var, mask
 
 
@@ -948,13 +1025,14 @@ def load_imcombine_item_region(
             mask = item.mask[section].copy()
         var = (
             None
-            if item.uncertainty is None
+            if extension_uncertainty is None or item.uncertainty is None
             else np.asarray(item.uncertainty.array)[section].copy()
         )
         return data, var, mask
 
-    # if `item` was path-like:
-    with fits.open(path, memmap=True) as hdul:
+    # Section reads stay partial without memory mapping, and allow Astropy to
+    # apply BSCALE/BZERO/BLANK to scaled and unsigned FITS data.
+    with fits.open(path, memmap=False) as hdul:
         data = _read_hdul_section(hdul, extension, section)
         if data is None:
             raise ValueError(f"No image data found in {path}.")
@@ -999,11 +1077,14 @@ def load_full_stack(
     ncombine = len(items)
     zeros = np.zeros(shape=ncombine)
     weights = np.ones(shape=ncombine)
+    # Match NaN * zeros promotion for integer output dtypes without creating
+    # a second full-sized allocation.
+    stack_dtype = np.result_type(np.dtype(dtype), np.nan)
     var_full = None
     if extension_uncertainty is not None:
-        var_full = np.nan * np.zeros(shape=(ncombine, *sh_comb), dtype=dtype)
+        var_full = np.full((ncombine, *sh_comb), np.nan, dtype=stack_dtype)
 
-    arr_full = np.nan * np.zeros(shape=(ncombine, *sh_comb), dtype=dtype)
+    arr_full = np.full((ncombine, *sh_comb), np.nan, dtype=stack_dtype)
     mask_full = np.zeros(shape=(ncombine, *sh_comb), dtype=bool)
 
     for i, (item, offset, shape) in enumerate(
@@ -1036,12 +1117,15 @@ def load_full_stack(
         # latter may contain too many NaNs due to offest shifting.
         # TODO: let get_zsw to get functionals for zsw, so _set_calc_zsw
         # will not be repeated for every iteration.
-        scale_i = scales[i] if extract_exptime else scale
         z_i, s_i, w_i = _resolve_zsw(
             arr=np.asarray(data[None, :]),  # make a fake (N+1)-D array
-            zero=zero,
-            scale=scale_i,
-            weight=weight,
+            zero=_image_parameter("zero", zero, i, ncombine),
+            scale=(
+                scales[i]
+                if extract_exptime
+                else _image_parameter("scale", scale, i, ncombine)
+            ),
+            weight=_image_parameter("weight", weight, i, ncombine),
             zero_kw=zero_kw,
             scale_kw=scale_kw,
             zero_section=zero_section,
@@ -1097,11 +1181,12 @@ def load_stack_chunk(
     )
     nactive = active_indices.size
 
+    stack_dtype = np.result_type(np.dtype(dtype), np.nan)
     var_chunk = None
     if extension_uncertainty is not None:
-        var_chunk = np.full((nactive, *chunk_shape), np.nan, dtype=dtype)
+        var_chunk = np.full((nactive, *chunk_shape), np.nan, dtype=stack_dtype)
 
-    arr_chunk = np.full((nactive, *chunk_shape), np.nan, dtype=dtype)
+    arr_chunk = np.full((nactive, *chunk_shape), np.nan, dtype=stack_dtype)
     mask_chunk = np.zeros(shape=(nactive, *chunk_shape), dtype=bool)
 
     for plane, _i in enumerate(active_indices):
@@ -1216,6 +1301,9 @@ def write_imcombine_outputs(
     output_verify: str,
     overwrite: bool,
     checksum: bool,
+    *,
+    output_sample_flags: StrPathLike | None = None,
+    sample_flags: np.ndarray | None = None,
 ) -> None:
     """Write the main combined image and any requested diagnostic FITS files.
 
@@ -1273,3 +1361,12 @@ def write_imcombine_outputs(
                 "output_flags_data is required when output_flags is requested."
             )
         write2fits(output_flags_data, hdr0, output_flags, return_ccd=False, **write_kw)
+
+    if output_sample_flags is not None:
+        if sample_flags is None:
+            raise ValueError(
+                "sample_flags is required when output_sample_flags is requested."
+            )
+        write2fits(
+            sample_flags, hdr0, output_sample_flags, return_ccd=False, **write_kw
+        )

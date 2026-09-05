@@ -386,3 +386,42 @@ class TestApphotErrorHandling:
         # Areas should be different
         areas = result["apsum_npix"]
         assert areas[0] < areas[1] < areas[2]
+
+
+class TestPhotometerVariance:
+    """Variance retains linear fractional-pixel weighting across apertures."""
+
+    def test_multiple_apertures_fractional_errors(self) -> None:
+        from astroimred.phot.apphot import photometer
+
+        data = np.full((9, 9), 7.0)
+        error = np.full_like(data, 3.0)
+        error.setflags(write=False)
+        mask = np.zeros_like(data, dtype=bool)
+        mask[4, 4] = True
+        apertures = [aap.CircAp((4, 4), r=r) for r in (1.5, 2.5)]
+        result = photometer(data, apertures, error=error, mask=mask)
+        areas = np.pi * np.array([1.5, 2.5]) ** 2 - 1
+        assert_allclose(result.apsum, 7 * areas)
+        assert_allclose(result.apsum_err, 3 * np.sqrt(areas))
+        assert_allclose(result.apsum_npix, areas)
+        assert_allclose(result.nbadpix, 1)
+        assert_allclose(error, 3)
+
+    def test_multiple_apertures_center_errors(self) -> None:
+        from astroimred.phot.apphot import photometer
+
+        data = np.ones((9, 9))
+        error = np.full_like(data, 2.0)
+        apertures = [aap.CircAp((4, 4), r=r) for r in (0.4, 1.1)]
+        result = photometer(data, apertures, error=error, method="center")
+        assert_allclose(result.apsum, [1, 5])
+        assert_allclose(result.apsum_err, 2 * np.sqrt([1, 5]))
+
+
+def test_photometer_empty_apertures_with_error() -> None:
+    from astroimred.phot.apphot import photometer
+
+    result = photometer(np.ones((3, 3)), [], error=np.ones((3, 3)))
+    assert result.apsum.shape == (0,)
+    assert result.apsum_err.shape == (0,)

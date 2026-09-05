@@ -1,9 +1,11 @@
 from pathlib import Path
+from typing import Literal
 
 import imcombiners as imc
 import numpy as np
 import numpy.typing as npt
 import pandas as pd
+import reducers as rd
 from astro_ndslice import is_list_like, listify, offseted_shape
 from astropy.nddata import CCDData
 from astropy.time import Time
@@ -17,6 +19,7 @@ from astroimred.logging import logger
 
 from . import _docstrings as docstrings
 from ._util_fits import (
+    _expand_chunk_slices,
     apply_output_offsets,
     calculate_zsw,
     check_stack_memory,
@@ -31,7 +34,7 @@ from ._util_fits import (
 __all__ = ["group_combine", "group_save", "imcombine"]
 
 """
-removed : headers, project, masktype, maskvalue, sigscale, grow
+removed : headers, project, masktype, maskvalue, sigscale
 partial removal:
     * combine in ["quadrature", "nmodel"]
 replaced
@@ -312,51 +315,72 @@ def _as_scalar_ccdclip_parameter(name: str, value: str | npt.ArrayLike | None) -
     return first
 
 
-def _subset_plane_values_for_active_chunk(
-    values: npt.ArrayLike,
-    active_indices: np.ndarray,
-    *,
-    reference_to_0th: bool,
-    operation: str,
-) -> np.ndarray:
-    """Return active per-plane values while preserving image-0 rebasing."""
-    arr = np.asarray(values, dtype=float).reshape(-1)
-    if arr.size == 0:
-        raise ValueError("Per-plane values must not be empty.")
-    if reference_to_0th:
-        if operation == "subtract":
-            arr = arr - arr[0]
-        elif operation == "divide":
-            arr = arr / arr[0]
-        else:
-            raise ValueError(f"Unknown plane-value operation: {operation}")
-    return arr[active_indices]
-
-
 def _ndckw_for_active_chunk(
     ndc_kw: dict[str, object], active_indices: np.ndarray
 ) -> dict[str, object]:
-    """Subset plane-wise kwargs for a compact chunk stack."""
+    """Select the original images' resolved calibration for a compact chunk."""
     chunk_kw = dict(ndc_kw)
-    chunk_kw["zero"] = _subset_plane_values_for_active_chunk(
-        ndc_kw["zero"],
-        active_indices,
-        reference_to_0th=bool(ndc_kw["zero_to_0th"]),
-        operation="subtract",
-    )
-    chunk_kw["scale"] = _subset_plane_values_for_active_chunk(
-        ndc_kw["scale"],
-        active_indices,
-        reference_to_0th=bool(ndc_kw["scale_to_0th"]),
-        operation="divide",
-    )
-    if ndc_kw["weight"] is not None:
-        chunk_kw["weight"] = np.asarray(ndc_kw["weight"], dtype=float).reshape(-1)[
-            active_indices
-        ]
-    chunk_kw["zero_to_0th"] = False
-    chunk_kw["scale_to_0th"] = False
+    for name in ("zero", "scale", "weight"):
+        if ndc_kw[name] is not None:
+            chunk_kw[name] = ndc_kw[name][active_indices]
     return chunk_kw
+
+
+def _combine_with_growth(
+    arr: np.ndarray,
+    mask: np.ndarray,
+    ndc_kw: dict[str, object],
+    core_slices: tuple[slice, ...],
+) -> tuple:
+    """Grow only algorithm rejections, retaining the original spatial axes.
+
+    Upstream rejection masks also contain pre-existing exclusions. Growing
+    those masks directly would spread input masks, thresholds, and nonfinite
+    samples. Sample flags identify actual algorithm rejections unambiguously.
+    Both rejection and the final numerical reduction stay in imcombiners.
+    """
+    result = list(
+        imc.ndcombine(
+            arr,
+            mask=mask,
+            **{
+                **ndc_kw,
+                "grow": None,
+                "diagnostics": "full",
+                "combine": "average",
+                "weight": None,
+            },
+        )
+    )
+    # The preliminary mean is unused; weights apply only after growth, since
+    # their valid-sample denominator can change when neighbors are excluded.
+    result[0] = None
+    flags = result[8]
+    added = imc.kernels.grow_mask(
+        (flags & imc.SampleFlags.ALGORITHM) != 0, ndc_kw["grow"]
+    )
+    added &= ~result[1]
+    result[1] |= added
+    flags[added] |= np.uint8(imc.SampleFlags.GROW)
+    result[7][rd.sum(added, axis=0) > 0] |= np.uint8(imc.OutputFlags.GROW)
+    del added
+    # Halo pixels have incomplete neighborhoods themselves. Only reduce the
+    # core, otherwise a halo's provisional mask can give a spurious zero-weight
+    # denominator even when every final output pixel has valid total weight.
+    result = [
+        None
+        if value is None
+        else value[(slice(None), *core_slices) if index in (1, 2, 8) else core_slices]
+        for index, value in enumerate(result)
+    ]
+    result[0] = imc.ndcombine(
+        arr[(slice(None), *core_slices)],
+        mask=mask[(slice(None), *core_slices)] | result[1],
+        **{**ndc_kw, "reject": None, "grow": None, "diagnostics": None},
+    )
+    if ndc_kw["diagnostics"] == "full":
+        return tuple(result)
+    return tuple(result[:8])
 
 
 def imcombine(
@@ -396,7 +420,7 @@ def imcombine(
     dtype_std: str = "float32",
     dtype_low: str | None = None,
     dtype_upp: str | None = None,
-    memlimit: float = 2.5e9,
+    memlimit: float | None = 2.5e9,
     verbose: bool = False,
     full: bool = False,
     imcmb_key: str = "$I",
@@ -412,7 +436,36 @@ def imcombine(
     output_verify: str = "exception",
     overwrite: bool = False,
     checksum: bool = False,
-) -> CCDData | dict:
+    *,
+    diagnostics: Literal["simple", "full"] | None = None,
+    grow: float | None = None,
+    output_sample_flags: StrPathLike | None = None,
+) -> CCDData | dict | tuple:
+    if diagnostics not in (None, "simple", "full"):
+        raise ValueError("diagnostics must be None, 'simple', or 'full'.")
+    if grow is not None:
+        grow = float(grow)
+        if not np.isfinite(grow) or grow < 0:
+            raise ValueError("grow must be a finite non-negative radius.")
+
+    if extension_uncertainty is not None:
+        raise NotImplementedError(
+            "extension_uncertainty is not supported: imcombine does not propagate "
+            "input uncertainties. Use extension_uncertainty=None for data-only "
+            "combination; output_std describes clipping spread, not propagated error."
+        )
+
+    if uncertainty_type != "stddev":
+        raise NotImplementedError(
+            "uncertainty_type is not supported: imcombine does not propagate "
+            "input uncertainties. Leave uncertainty_type='stddev'."
+        )
+
+    if combine.lower() in {"weighted_average", "wvg"}:
+        combine = "average"
+    if weight is not None and combine.lower() not in {"average", "mean", "avg"}:
+        raise ValueError("weight can only be used with mean combination.")
+
     # === 1. Normalize defaults that must not use mutable signature values ===
     thresholds = None if thresholds is None else list(thresholds)
     zero_kw = None if zero_kw is None else dict(zero_kw)
@@ -426,8 +479,11 @@ def imcombine(
         logger.info("- Organizing...")
 
     # === 2. Organize inputs and output mode ===
+    want_sample_flags = diagnostics == "full" or output_sample_flags is not None
     full = (
         full
+        or diagnostics is not None
+        or want_sample_flags
         or output_mask is not None
         or output_nrej is not None
         or output_std is not None
@@ -439,6 +495,12 @@ def imcombine(
     items = inputs2list(inputs, sort=True, accept_ccdlike=True, check_coherency=True)
     ncombine = len(items)
     rejname = _set_reject_name(reject)
+    # Below one pixel the Euclidean ball contains only its center, so growth
+    # cannot add any integer-grid sample and needs no extra calculation.
+    growth_active = grow is not None and grow >= 1 and rejname is not None
+    # Any integer-grid displacement within the radius is <= floor(grow) on
+    # each axis. This halo therefore contains every possible growth seed.
+    halo = int(grow) if growth_active else 0
     int_dtype = _set_int_dtype(ncombine)
     extension = _parse_extension(extension)
     # If extensions are given as `None`, don't parse them and leave it as `None`.
@@ -484,7 +546,9 @@ def imcombine(
     offsets, sh_comb = offseted_shape(
         shapes, offsets, method="outer", offset_order_xyz=False, intify_offsets=True
     )
-    compact_chunks = rejname not in {"minmax", "pclip"}
+    # Rejection counts and diagnostics depend on the full input-plane axis,
+    # including NaNs where offset images do not cover an output pixel.
+    compact_chunks = rejname is None and not want_sample_flags
 
     mem_req, num_chunk, chunks = check_stack_memory(
         ncombine=ncombine,
@@ -494,6 +558,11 @@ def imcombine(
         memlimit=memlimit,
         offsets=offsets if compact_chunks else None,
         shapes=shapes if compact_chunks else None,
+        full=full,
+        reject=rejname,
+        thresholds=thresholds is not None,
+        sample_flags=want_sample_flags,
+        halo=halo,
     )
     if verbose:
         logger.info("Done.")
@@ -559,16 +628,23 @@ def imcombine(
         s=f"Loaded {ncombine} FITS, calculated zero, scale, weights",
     )
 
+    # Rebase once in calibration precision for both execution paths. The
+    # backend casts to the pixel dtype; doing that before subtraction can
+    # erase small zero differences. Its resolver also preserves scalar
+    # calibration when there is only one input image.
+    calibration_workspace = np.empty((ncombine, 1, 1), dtype=float)
     ndc_kw = {
         "combine": combine,
         "reject": rejname,
-        "scale": scales,  # it is scales , NOT scale , as it was updated above.
-        "zero": zeros,  # it is zeros  , NOT zero  , as it was updated above.
-        # `weights` are currently recorded in output headers, but astroimred has
-        # not implemented weighted imcombine semantics yet.
-        "weight": None,
-        "zero_to_0th": zero_to_0th,
-        "scale_to_0th": scale_to_0th,
+        "scale": imc.resolve_zero_scale(
+            "scale", scales, calibration_workspace, nonzero=True, to_0th=scale_to_0th
+        ).reshape(-1),
+        "zero": imc.resolve_zero_scale(
+            "zero", zeros, calibration_workspace, to_0th=zero_to_0th
+        ).reshape(-1),
+        "weight": weights if weight is not None else None,
+        "zero_to_0th": False,
+        "scale_to_0th": False,
         "scale_sigclip_kwargs": scale_kw,
         "zero_sigclip_kwargs": zero_kw,
         "thresholds": thresholds,
@@ -583,7 +659,10 @@ def imcombine(
         "gain": gns,  # it is gns, not gain   , as it was updated above.
         "snoise": sns,  # it is sns, not snoise , as it was updated above.
         "pclip": pclip,
-        "diagnostics": "simple" if full else None,
+        "grow": grow if growth_active else None,
+        "diagnostics": (
+            "full" if want_sample_flags else "simple" if full or growth_active else None
+        ),
     }
     if rejname == "ccdclip":
         ndc_kw["rdnoise"] = _as_scalar_ccdclip_parameter("rdnoise", rds)
@@ -593,13 +672,24 @@ def imcombine(
     # == Combine with rejection! ===================================================== #
     _t = Time.now()
 
+    sample_flags_data = None
     if num_chunk == 1:
-        comb = imc.ndcombine(arr=arr_full, mask=mask_full, **ndc_kw)
+        comb = (
+            _combine_with_growth(arr_full, mask_full, ndc_kw, chunks[0])
+            if growth_active
+            else imc.ndcombine(arr=arr_full, mask=mask_full, **ndc_kw)
+        )
 
         if full:  # unpack the output
-            comb, mask_rej, mask_thresh, std, low, upp, nit, output_flags_data = comb
+            if want_sample_flags:
+                sample_flags_data = comb[8]
+            comb, mask_rej, mask_thresh, std, low, upp, nit, output_flags_data = comb[
+                :8
+            ]
             mask_total = _mask_total_from_parts(mask_full, mask_rej, mask_thresh)
         else:
+            if growth_active:
+                comb = comb[0]
             std = low = upp = mask_total = output_flags_data = None
     else:
         if verbose:
@@ -608,17 +698,24 @@ def imcombine(
         comb = np.empty(sh_comb, dtype=dtype)
         std = mask_total = mask_rej = mask_thresh = low = upp = nit = None
         output_flags_data = None
+        if want_sample_flags:
+            sample_flags_data = np.zeros((ncombine, *sh_comb), dtype=np.uint8)
 
         for i_chunk, chunk_slices in enumerate(chunks, start=1):
             if verbose:
                 logger.info("-- chunk %d/%d: %s", i_chunk, num_chunk, chunk_slices)
 
+            read_slices = _expand_chunk_slices(chunk_slices, sh_comb, halo)
+            core_slices = tuple(
+                slice(core.start - read.start, core.stop - read.start)
+                for core, read in zip(chunk_slices, read_slices, strict=True)
+            )
             arr_i, mask_i, var_i, active_indices = load_stack_chunk(
                 items=items,
                 offsets=offsets,
                 shapes=shapes,
                 raw_shapes=raw_shapes,
-                chunk_slices=chunk_slices,
+                chunk_slices=read_slices,
                 dtype=dtype,
                 mask=mask,
                 trimsec=trimsec,
@@ -629,14 +726,23 @@ def imcombine(
             )
 
             if active_indices.size == 0:
-                comb[chunk_slices] = np.nan
+                # Use the same array cast as the final full-stack output.
+                # Assigning a Python NaN directly to integer arrays raises.
+                # An empty sum is zero; other combinations return NaN.
+                comb[chunk_slices] = np.asarray(
+                    0.0 if combine.lower() == "sum" else np.nan
+                ).astype(dtype)
                 if full and mask_total is None:
                     mask_total = np.zeros((ncombine, *sh_comb), dtype=bool)
                 del arr_i, mask_i, var_i
                 continue
 
             chunk_kw = _ndckw_for_active_chunk(ndc_kw, active_indices)
-            combined_i = imc.ndcombine(arr=arr_i, mask=mask_i, **chunk_kw)
+            combined_i = (
+                _combine_with_growth(arr_i, mask_i, chunk_kw, core_slices)
+                if growth_active
+                else imc.ndcombine(arr=arr_i, mask=mask_i, **chunk_kw)
+            )
 
             if full:
                 comb_i = combined_i[0]
@@ -647,7 +753,9 @@ def imcombine(
                 upp_i = combined_i[5]
                 nit_i = combined_i[6]
                 output_flags_i = combined_i[7]
-                mask_total_i = _mask_total_from_parts(mask_i, mask_rej_i, mask_thresh_i)
+                mask_total_i = _mask_total_from_parts(
+                    mask_i[(slice(None), *core_slices)], mask_rej_i, mask_thresh_i
+                )
                 mask_slices = (slice(None), *chunk_slices)
 
                 if mask_total is None:
@@ -689,10 +797,26 @@ def imcombine(
                     nit[chunk_slices] = nit_i
                 if output_flags_i is not None:
                     output_flags_data[chunk_slices] = output_flags_i
+                if want_sample_flags:
+                    sample_flags_data[(active_indices, *chunk_slices)] = combined_i[8]
             else:
-                comb[chunk_slices] = combined_i
+                comb[chunk_slices] = combined_i[0] if growth_active else combined_i
 
-            del arr_i, mask_i, var_i
+            # Release chunk outputs before the next input chunk is loaded.
+            # Otherwise the previous tuple and its unpacked views stay resident.
+            if full:
+                del (
+                    comb_i,
+                    mask_rej_i,
+                    mask_thresh_i,
+                    std_i,
+                    low_i,
+                    upp_i,
+                    nit_i,
+                    output_flags_i,
+                    mask_total_i,
+                )
+            del combined_i, arr_i, mask_i, var_i
 
         if not full:
             std = low = upp = mask_total = output_flags_data = None
@@ -720,7 +844,7 @@ def imcombine(
         unit = "adu"
 
     cmt2hdr(hdr0, "h", t_ref=_t, verbose=verbose, s="Rejection and combination done")
-    comb = comb.astype(dtype)
+    comb = comb.astype(dtype, copy=False)
     comb = CCDData(data=comb, header=hdr0, unit=unit)
 
     if verbose:
@@ -750,6 +874,8 @@ def imcombine(
         output_verify=output_verify,
         overwrite=overwrite,
         checksum=checksum,
+        output_sample_flags=output_sample_flags,
+        sample_flags=sample_flags_data,
     )
 
     if verbose:
@@ -778,6 +904,7 @@ def imcombine(
                 "upp": upp,
                 "nit": nit,
                 "output_flags": output_flags_data,
+                **({"sample_flags": sample_flags_data} if want_sample_flags else {}),
             }
         else:
             return (
@@ -789,6 +916,7 @@ def imcombine(
                 upp,
                 nit,
                 output_flags_data,
+                *((sample_flags_data,) if want_sample_flags else ()),
             )
     else:
         return comb
@@ -824,13 +952,38 @@ imcombine.__doc__ = f"""A FITS-file helper for ``imcombiners.ndcombine``.
         `str`), or a `tuple` of `str` and `int`: ``(EXTNAME, EXTVER)``. If
         `None` (default), the *first extension with data* will be used. If
         `extension_uncertainty` or `extension_mask` is `None` (default),
-        uncertainty and mask are all ignored (turned off). Currently
-        error-propagation or weighted combine is not supported, so only
-        `extension_mask` can give difference to the output.
+        uncertainty and mask extensions are ignored (turned off).
+        A non-`None` `extension_uncertainty` raises `NotImplementedError` before
+        input I/O: uncertainty propagation is not supported. Attached CCDData
+        uncertainties are ignored without copying. `output_std` is clipping
+        spread, not propagated measurement uncertainty.
 
     {docstrings.OFFSETS_LONG(indent=4)}
 
     {docstrings.NDCOMB_PARAMETERS_COMMON(indent=4)}
+
+    weight : `float`, array-like, `str`, or `None`, optional
+        Finite, nonzero weights for mean/average combination; signs are retained.
+        Use a shared scalar, one value per image, or a statistic such as
+        ``"mean"`` computed within `scale_section` on each trimmed input.
+        Vectors follow sorted file-path order; CCDData lists retain input order.
+        Each pixel uses only finite, unmasked, unrejected samples; `None` gives
+        equal weights. No valid samples gives NaN; valid weights summing to zero
+        raise `ZeroDivisionError`. Weights do not affect rejection.
+
+    diagnostics : `str` or `None`, optional
+        `None` preserves the existing `full` and output-path behavior.
+        ``"simple"`` returns the same diagnostics as ``full=True``;
+        ``"full"`` also returns `sample_flags`, costing one retained byte per
+        input sample plus temporary workspace. Flags do not change pixel values.
+
+    grow : `float` or `None`, optional
+        Non-negative Euclidean radius in pixels around algorithm rejections,
+        within each input image. Input masks, thresholds, and nonfinite pixels
+        are not growth seeds. `None` disables growth; radii below 1 add nothing.
+        Chunked reads include neighbors across boundaries. Growth uses extra
+        temporary diagnostics and a second combination pass. With no `reject`,
+        it has no effect. `std` remains clipping spread, not propagated error.
 
     imcmb_key : `str`
         The thing to add as ``IMCMBnnn`` in the output FITS file header. If
@@ -849,11 +1002,16 @@ imcombine.__doc__ = f"""A FITS-file helper for ``imcombiners.ndcombine``.
         time of each FITS file. This is used only if scaling is done for
         exposure time (see `scale`).
 
-    memlimit : float, optional
-        Approximate memory limit in bytes for the temporary FITS stack. If the
-        planned stack is larger, FITS inputs are read in row/column sections
-        after offsets are applied, each section is combined, and the final
-        output is stitched from the chunk results.
+    uncertainty_type : `str`, optional
+        Reserved for future uncertainty propagation. Only the default
+        ``"stddev"`` is accepted; other values raise `NotImplementedError`.
+
+    memlimit : `float` or `None`, optional
+        Approximate byte budget for input data, working buffers, and outputs.
+        If the estimate exceeds it, read and combine spatial chunks.
+        The final image and requested diagnostics remain in memory.
+        Statistical normalization may still read a full input image.
+        `None` or non-positive values disable chunking.
 
     output : path-like, optional
         The path to the final combined FITS file. It has dtype of `dtype` and
@@ -866,8 +1024,14 @@ imcombine.__doc__ = f"""A FITS-file helper for ``imcombiners.ndcombine``.
         and integer output flags (see `mask_rej`, `mask_thresh`, `std`, `low`,
         `upp`, `nit`, and `output_flags` in Returns.)
 
+    output_sample_flags : path-like, optional
+        Write the stack-shaped `uint8` sample flags as a FITS image and enable
+        detailed diagnostic returns. Uses `overwrite`, `checksum`, and
+        `output_verify` like the other output files.
+
     return_dict : `bool`, optional.
-        Whether to return the results as `dict` (works only if ``full=True``).
+        When diagnostics are enabled, `True` returns a `dict` and `False` a
+        tuple. Without diagnostics, the result is always a single `CCDData`.
 
     Returns
     -------
@@ -877,6 +1041,17 @@ imcombine.__doc__ = f"""A FITS-file helper for ``imcombiners.ndcombine``.
         The combined data.
 
     {docstrings.NDCOMB_RETURNS_COMMON(indent=4)}
+
+    sample_flags : `~numpy.ndarray` of `uint8`
+        Returned only for ``diagnostics="full"`` or `output_sample_flags`:
+        appended as the ninth tuple entry or the ``"sample_flags"`` dict key.
+        Shape is ``(number_of_inputs, *combined_shape)``. Bits follow
+        `imcombiners.SampleFlags`: 1=input mask, 2=nonfinite, 4=threshold,
+        8=algorithm rejection, 16=added by growth, 32=previous exclusion,
+        64=restored by `nkeep`, and 128=restored by `maxrej`.
+        Multiple bits may be set; this is not a boolean exclusion mask.
+        `output_flags` uses a separate per-output-pixel flag namespace;
+        its bit 16 indicates that growth added at least one rejection there.
 
     {docstrings.IMCOMBINE_LINK(indent=4)}
     """
