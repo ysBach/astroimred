@@ -491,7 +491,7 @@ def extract_stack_metadata(
     hdr0 = _parse_imc_data_header(items[0], extension=extension, parse_data=False)[1]
     if hdr0 is None:
         raise ValueError("Could not read header from the first input image.")
-    ndim = hdr0["NAXIS"]
+    ndim = items[0].data.ndim if isinstance(items[0], CCDData) else hdr0["NAXIS"]
     # N x ndim. sizes[i, :] = images[i].shape
     shapes = np.ones((ncombine, ndim), dtype=int)
     raw_shapes = np.ones((ncombine, ndim), dtype=int)
@@ -564,7 +564,8 @@ def extract_stack_metadata(
             if extract_snoise:
                 sns[i] = float(hdr[snoise])
 
-            if hdr["NAXIS"] != ndim:
+            item_ndim = item.data.ndim if isinstance(item, CCDData) else hdr["NAXIS"]
+            if item_ndim != ndim:
                 raise ValueError(
                     "All FITS files must have the identical ndim, "
                     + "though they can have different sizes."
@@ -590,7 +591,11 @@ def extract_stack_metadata(
                 )
 
             # NOTE: the indexing in python is [z, y, x] order!!
-            raw_shape = tuple(int(hdr[f"NAXIS{i}"]) for i in range(ndim, 0, -1))
+            raw_shape = (
+                item.data.shape
+                if isinstance(item, CCDData)
+                else tuple(int(hdr[f"NAXIS{j}"]) for j in range(ndim, 0, -1))
+            )
             raw_shapes[i,] = raw_shape
             shapes[i,] = _trimmed_shape(raw_shape, trimsec)
         else:
@@ -608,11 +613,11 @@ def extract_stack_metadata(
                 )[0]
                 if data is None:
                     raise ValueError(f"Could not read data from input {i}.") from None
-                raw_shape = data.shape
                 if data.ndim != ndim:
                     raise ValueError(
-                        "All input images must have identical ndim."
+                        "All input images must have the identical ndim."
                     ) from None
+                raw_shape = data.shape
             else:
                 _, hdr = _parse_imc_data_header(
                     item, extension=extension, parse_data=False, copy=False

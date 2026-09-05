@@ -6,10 +6,11 @@ import astroapers as aap
 import astroapers.kernels as aapk
 import numpy as np
 import pandas as pd
+import reducers as rd
 from astropy.nddata import CCDData
 
 from .background import sky_fit
-from .center import circular_bbox_cut
+from .center import circular_bbox_cut, circular_slice
 
 __all__ = [
     "moffat_r",
@@ -367,6 +368,9 @@ def radprof_pix(img, pos, mask=None, rmax=10, sort_dist=False, fitfunc=None, ref
         The image to be profiled.
     pos : array_like
         The xy coordinates of the center of the object (0-indexing).
+    mask : array-like or bool, optional
+        Pixels to exclude. May match the full image or broadcast to the local
+        cutout. Pass ``mask=ccd.mask`` explicitly to use a CCDData mask.
     rmax : int, optional
         The maximum radius to be profiled.
         Default is ``10``.
@@ -392,7 +396,13 @@ def radprof_pix(img, pos, mask=None, rmax=10, sort_dist=False, fitfunc=None, ref
         raise TypeError(f"img must be a CCDData or ndarray (now {type(img) = })")
 
     cut, _, _, dists = circular_bbox_cut(img, pos, radius=rmax, return_dists=True)
-    mask = (dists > rmax) if mask is None else ((dists > rmax) | mask)
+    if mask is not None:
+        mask = np.asarray(mask, dtype=bool)
+        if mask.shape == img.shape:
+            mask = mask[circular_slice(img.shape, pos, rmax)]
+        mask = (dists > rmax) | np.broadcast_to(mask, cut.shape)
+    else:
+        mask = dists > rmax
 
     # cut = Cutout2D(img, pos, 2*rmax + 1).data
     # pos_cut = cut.
@@ -411,21 +421,22 @@ def radprof_pix(img, pos, mask=None, rmax=10, sort_dist=False, fitfunc=None, ref
 
         _r = dists[~mask]
         _i = cut[~mask]
-        _imin, _imax = _i.min(), _i.max()
+        _imin, _imax = rd.minmax(_i)
+        _rmin = rd.min(_r)
         if fitfunc == "gauss":
             fitter = gauss_r
-            p0 = [_i[_r == _r.min()][0] - _imin, max(1, rmax / 6), _imin]
+            p0 = [_i[_r == _rmin][0] - _imin, max(1, rmax / 6), _imin]
             bounds = np.array([[0, 0, _imin - 1], [np.inf, rmax / 2, _imax + 1]])
             # assuming the user gave ~ (2-3)x FWHM, and we want sigma ~ 0.4xFWHM
         elif fitfunc == "moffat":
             fitter = moffat_r
-            p0 = [_i[_r == _r.min()][0] - _imin, 1, 2.5, _imin]
+            p0 = [_i[_r == _rmin][0] - _imin, 1, 2.5, _imin]
             bounds = np.array(
                 [[0, 0.1, 1.0, _imin - 1], [np.inf, rmax, np.inf, _imax + 1]]
             )
         elif fitfunc == "bivt":
             fitter = bivt_r
-            p0 = [_i[_r == _r.min()][0] - _imin, 1, max(1, rmax / 6), _imin]
+            p0 = [_i[_r == _rmin][0] - _imin, 1, max(1, rmax / 6), _imin]
             bounds = np.array(
                 [[0, -2, 1.0e-10, _imin - 1], [np.inf, 15, 2 * rmax, _imax + 1]]
             )

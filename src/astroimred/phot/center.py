@@ -2,6 +2,7 @@ import contextlib
 import logging
 
 import numpy as np
+import reducers as rd
 import reducers.lowlevel as rdl
 from astropy.modeling import Fittable2DModel, Parameter
 from astropy.modeling.fitting import LevMarLSQFitter
@@ -717,19 +718,19 @@ def _fit_2dgaussian(data, error=None, mask=None):
         )
 
     # assign zero weight to masked pixels
-    if data.mask is not np.ma.nomask:
-        weights[data.mask] = 0.0
+    mask = np.ma.getmaskarray(data)
+    weights[mask] = 0.0
 
-    mask = data.mask
-    data.fill_value = 0.0
-    data = data.filled()
+    data = data.filled(0.0)
 
     # Subtract the minimum of the data as a rough background estimate.
     # This will also make the data values positive, preventing issues with
     # the moment estimation in data_properties. Moments from negative data
     # values can yield undefined Gaussian parameters, e.g., x/y_stddev.
+    data_min, data_max = rd.minmax(data)
+
     props = sep_extract(
-        data - np.min(data),
+        data - data_min,
         thresh=0.0,  # Use all data points
         mask=mask,
         filter_kernel=None,  # No convolution
@@ -737,8 +738,13 @@ def _fit_2dgaussian(data, error=None, mask=None):
         clean=False,  # No cleaning
     )[0]
 
+    if len(props) == 0:
+        raise ValueError(
+            "No source detected in the cutout data to initialize 2D Gaussian fit."
+        )
+
     init_const = 0.0  # subtracted data minimum above
-    init_amplitude = np.ptp(data)
+    init_amplitude = data_max - data_min
     g_init = GaussianConst2D(
         constant=init_const,
         amplitude=init_amplitude,

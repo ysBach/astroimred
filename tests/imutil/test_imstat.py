@@ -168,6 +168,53 @@ class TestGiveStats:
 
         np.testing.assert_array_equal(arr, original)
 
+    def test_integer_mask_and_unequal_sections(self) -> None:
+        data = np.arange(12, dtype=np.int16).reshape(3, 4)
+        original = data.copy()
+        mask = np.zeros(data.shape, dtype=bool)
+        mask[0, 1] = True
+        result = imstat.give_stats(data, mask=mask, statsecs=["[1:2,1:1]", "[3:4,2:3]"])
+        # Selected pixels: 0, 6, 7, 10, 11 (pixel 1 is masked).
+        assert result["num"] == 5
+        assert result["avg"] == pytest.approx(6.8)
+        assert result["med"] == 7
+        assert result["std"] == pytest.approx(np.sqrt(18.7))
+        np.testing.assert_array_equal(data, original)
+        assert mask[0, 1]
+        assert np.count_nonzero(mask) == 1
+
+    def test_unequal_sections(self) -> None:
+        result = imstat.give_stats(
+            np.arange(12.0).reshape(3, 4),
+            statsecs=["[1:2,1:1]", "[3:4,2:3]"],
+        )
+        assert result["num"] == 6
+        assert result["avg"] == pytest.approx(35 / 6)
+
+    @pytest.mark.parametrize("section", [slice(1, 3), (slice(1, 3), slice(0, 2))])
+    def test_single_slice_section(self, section: object) -> None:
+        data = np.arange(12.0).reshape(3, 4)
+        expected = (
+            data[section, section] if isinstance(section, slice) else data[section]
+        )
+        result = imstat.give_stats(data, statsecs=section)
+        assert result["num"] == expected.size
+        assert result["avg"] == pytest.approx(np.mean(expected))
+
+    @pytest.mark.parametrize(
+        "data, kwargs",
+        [
+            (np.array([], dtype=float), {}),
+            (np.array([np.nan, np.inf]), {}),
+            (np.array([1, 2]), {"mask": True}),
+            (np.ones((2, 2)), {"statsecs": []}),
+            (np.ones((2, 2)), {"statsecs": "[5:6,5:6]"}),
+        ],
+    )
+    def test_no_finite_selected_pixels(self, data: np.ndarray, kwargs: dict) -> None:
+        with pytest.raises(ValueError, match="No finite unmasked pixels"):
+            imstat.give_stats(data, **kwargs)
+
     def test_stats_path_input(self, temp_fits_file):
         """Test statistics on a path-like FITS input."""
         result = imstat.give_stats(temp_fits_file)
