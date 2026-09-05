@@ -311,8 +311,8 @@ def correct_eff(
     q_eff = q / p_eff
     u_eff = u / p_eff
 
-    dq_eff = np.abs(q_eff) * quad_sum(dq / q, dp_eff / p_eff)
-    du_eff = np.abs(u_eff) * quad_sum(du / u, dp_eff / p_eff)
+    dq_eff = quad_sum(dq / p_eff, q_eff * dp_eff / p_eff)
+    du_eff = quad_sum(du / p_eff, u_eff * dp_eff / p_eff)
 
     q_eff, u_eff, dq_eff, du_eff = percent_scale(
         q_eff, u_eff, dq_eff, du_eff, input_percent=False, output_percent=out_pct
@@ -393,10 +393,10 @@ def correct_off(
     cos2u = np.cos(2 * rot_u)
     sin2u = np.sin(2 * rot_u)
     q_rot = q - (cos2q * q_off - sin2q * u_off)
-    u_rot = u - (cos2u * q_off - sin2u * u_off)
+    u_rot = u - (sin2u * q_off + cos2u * u_off)
 
     dq_rot = quad_sum(dq, cos2q * dq_off, sin2q * du_off)
-    du_rot = quad_sum(du, cos2u * dq_off, sin2u * du_off)
+    du_rot = quad_sum(du, sin2u * dq_off, cos2u * du_off)
 
     q_rot, u_rot, dq_rot, du_rot = percent_scale(
         q_rot, u_rot, dq_rot, du_rot, input_percent=False, output_percent=out_pct
@@ -482,12 +482,8 @@ def correct_pa(
     q_inst = cos2o * q + sin2o * u
     u_inst = -sin2o * q + cos2o * u
 
-    dq_inst = quad_sum(
-        cos2o * dq, sin2o * du, 2 * sin2o * q * dpa_off, 2 * cos2o * u * dpa_off
-    )
-    du_inst = quad_sum(
-        sin2o * dq, cos2o * du, 2 * cos2o * q * dpa_off, 2 * sin2o * u * dpa_off
-    )
+    dq_inst = quad_sum(cos2o * dq, sin2o * du, 2 * u_inst * dpa_off)
+    du_inst = quad_sum(sin2o * dq, cos2o * du, 2 * q_inst * dpa_off)
 
     q_inst, u_inst, dq_inst, du_inst = percent_scale(
         q_inst, u_inst, dq_inst, du_inst, input_percent=False, output_percent=out_pct

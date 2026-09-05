@@ -5,6 +5,7 @@ All expected values are analytically derived from polarimetry formulas.
 """
 
 import numpy as np
+import pytest
 from numpy.testing import assert_allclose
 
 from astroimred.phot.polarimetry import (
@@ -465,3 +466,169 @@ class TestPolarimetryAnalytical:
         # u_rot = -1*1 + 0*0 = -1
         assert_allclose(q_rot, 0.0, atol=1e-10)
         assert_allclose(u_rot, -1.0, rtol=1e-10)
+
+
+class TestPolarimetryNumericalFixes:
+    """Analytical and Jacobian tests for correct_eff, correct_off, and correct_pa."""
+
+    def test_correct_eff_zero_qu_scalars_and_arrays(self):
+        """Zero q or u must yield finite error sigma / p_eff without NaN or warning."""
+        q_eff, u_eff, dq_eff, du_eff = correct_eff(
+            q=0.0,
+            u=0.0,
+            dq=0.02,
+            du=0.03,
+            p_eff=0.8,
+            dp_eff=0.04,
+        )
+        assert_allclose(q_eff, 0.0, atol=1e-12)
+        assert_allclose(u_eff, 0.0, atol=1e-12)
+        assert np.isfinite(dq_eff) and np.isfinite(du_eff)
+        assert_allclose(dq_eff, 0.02 / 0.8, rtol=1e-12)
+        assert_allclose(du_eff, 0.03 / 0.8, rtol=1e-12)
+
+        q_arr = np.array([0.0, 5.0])
+        u_arr = np.array([3.0, 0.0])
+        dq_arr = np.array([0.1, 0.2])
+        du_arr = np.array([0.15, 0.25])
+        p_eff_pct = 90.0
+        dp_eff_pct = 2.0
+
+        q_out, u_out, dq_out, du_out = correct_eff(
+            q_arr,
+            u_arr,
+            dq_arr,
+            du_arr,
+            p_eff=p_eff_pct,
+            dp_eff=dp_eff_pct,
+            in_pct=True,
+            out_pct=True,
+        )
+        exp_dq0 = 0.1 / (p_eff_pct / 100.0)
+        assert_allclose(dq_out[0], exp_dq0, rtol=1e-10)
+        exp_du1 = 0.25 / (p_eff_pct / 100.0)
+        assert_allclose(du_out[1], exp_du1, rtol=1e-10)
+
+        # Negative p_eff must produce non-negative errors
+        _, _, dq_neg, du_neg = correct_eff(
+            q=0.1,
+            u=-0.2,
+            dq=0.01,
+            du=0.02,
+            p_eff=-0.5,
+            dp_eff=0.02,
+        )
+        assert dq_neg >= 0 and du_neg >= 0
+        assert_allclose(
+            dq_neg, np.hypot(0.01 / (-0.5), (0.1 / (-0.5)) * 0.02 / (-0.5)), rtol=1e-12
+        )
+        assert_allclose(
+            du_neg, np.hypot(0.02 / (-0.5), (-0.2 / (-0.5)) * 0.02 / (-0.5)), rtol=1e-12
+        )
+
+    def test_correct_off_asymmetric_rotation_and_errors(self):
+        """correct_off must follow 2D rotation for both q and u with asymmetric offsets."""
+        q, u = 0.12, -0.08
+        dq, du = 0.005, 0.004
+        q_off, u_off = 0.03, -0.01
+        dq_off, du_off = 0.002, 0.003
+        rot_q_deg, rot_u_deg = 20.0, 20.0
+
+        q_rot, u_rot, dq_rot, du_rot = correct_off(
+            q,
+            u,
+            dq=dq,
+            du=du,
+            rot_q=rot_q_deg,
+            rot_u=rot_u_deg,
+            q_off=q_off,
+            u_off=u_off,
+            dq_off=dq_off,
+            du_off=du_off,
+            in_deg=True,
+        )
+
+        rot_rad = np.radians(20.0)
+        cos2 = np.cos(2 * rot_rad)
+        sin2 = np.sin(2 * rot_rad)
+
+        exp_off_q = cos2 * q_off - sin2 * u_off
+        exp_off_u = sin2 * q_off + cos2 * u_off
+        assert_allclose(q_rot, q - exp_off_q, rtol=1e-12)
+        assert_allclose(u_rot, u - exp_off_u, rtol=1e-12)
+
+        exp_dq = np.sqrt(dq**2 + (cos2 * dq_off) ** 2 + (sin2 * du_off) ** 2)
+        exp_du = np.sqrt(du**2 + (sin2 * dq_off) ** 2 + (cos2 * du_off) ** 2)
+        assert_allclose(dq_rot, exp_dq, rtol=1e-12)
+        assert_allclose(du_rot, exp_du, rtol=1e-12)
+
+    @pytest.mark.parametrize("pa_ccw", [True, False])
+    def test_correct_pa_shared_angle_jacobian(self, pa_ccw):
+        """correct_pa values and errors must match hand-written rotation and finite-difference Jacobian."""
+        q, u = 0.05, 0.03
+        dq, du = 0.004, 0.003
+        pa_off_deg = 35.0
+        dpa_off_deg = 1.5
+        pa_obs_deg = 10.0
+
+        q_inst, u_inst, dq_inst, du_inst = correct_pa(
+            q,
+            u,
+            dq=dq,
+            du=du,
+            pa_off=pa_off_deg,
+            dpa_off=dpa_off_deg,
+            pa_obs=pa_obs_deg,
+            pa_ccw=pa_ccw,
+            in_deg=True,
+        )
+
+        # Independent hand-written rotation model from raw inputs in radians
+        pa_off_rad = np.radians(pa_off_deg)
+        pa_obs_rad = np.radians(pa_obs_deg)
+        dpa_rad = np.radians(dpa_off_deg)
+
+        def rot_model(qv, uv, th_off, th_obs):
+            sign = 1.0 if pa_ccw else -1.0
+            delta = sign * (th_off - th_obs)
+            c2 = np.cos(2.0 * delta)
+            s2 = np.sin(2.0 * delta)
+            return c2 * qv + s2 * uv, -s2 * qv + c2 * uv
+
+        exp_q, exp_u = rot_model(q, u, pa_off_rad, pa_obs_rad)
+        assert_allclose(q_inst, exp_q, rtol=1e-12)
+        assert_allclose(u_inst, exp_u, rtol=1e-12)
+
+        # Independent central finite-difference Jacobian w.r.t. [q, u, pa_off]
+        h = 1e-6
+        jq_q = (
+            rot_model(q + h, u, pa_off_rad, pa_obs_rad)[0]
+            - rot_model(q - h, u, pa_off_rad, pa_obs_rad)[0]
+        ) / (2 * h)
+        jq_u = (
+            rot_model(q, u + h, pa_off_rad, pa_obs_rad)[0]
+            - rot_model(q, u - h, pa_off_rad, pa_obs_rad)[0]
+        ) / (2 * h)
+        jq_th = (
+            rot_model(q, u, pa_off_rad + h, pa_obs_rad)[0]
+            - rot_model(q, u, pa_off_rad - h, pa_obs_rad)[0]
+        ) / (2 * h)
+
+        ju_q = (
+            rot_model(q + h, u, pa_off_rad, pa_obs_rad)[1]
+            - rot_model(q - h, u, pa_off_rad, pa_obs_rad)[1]
+        ) / (2 * h)
+        ju_u = (
+            rot_model(q, u + h, pa_off_rad, pa_obs_rad)[1]
+            - rot_model(q, u - h, pa_off_rad, pa_obs_rad)[1]
+        ) / (2 * h)
+        ju_th = (
+            rot_model(q, u, pa_off_rad + h, pa_obs_rad)[1]
+            - rot_model(q, u, pa_off_rad - h, pa_obs_rad)[1]
+        ) / (2 * h)
+
+        exp_dq = np.sqrt((jq_q * dq) ** 2 + (jq_u * du) ** 2 + (jq_th * dpa_rad) ** 2)
+        exp_du = np.sqrt((ju_q * dq) ** 2 + (ju_u * du) ** 2 + (ju_th * dpa_rad) ** 2)
+
+        assert_allclose(dq_inst, exp_dq, rtol=1e-8)
+        assert_allclose(du_inst, exp_du, rtol=1e-8)
