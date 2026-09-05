@@ -534,7 +534,6 @@ class TestImCombine:
         raw_offsets = np.array([[0, 1], [2, 0], [1, 2]])
         zeros = np.array([0.0, 10.0, 20.0])
         scales = np.array([1.0, 2.0, 4.0])
-        weights = np.array([1.0, 3.0, 5.0])
         images = [scales[i] * sky + zeros[i] for i in range(3)]
         paths = []
         for i, image in enumerate(images):
@@ -547,7 +546,6 @@ class TestImCombine:
             offsets=raw_offsets,
             zero=zeros,
             scale=scales,
-            weight=weights,
             combine="average",
             reject="none",
             full=True,
@@ -558,11 +556,6 @@ class TestImCombine:
             images, raw_offsets, combine="average", zero=zeros, scale=scales
         )
         _assert_imcombine_full(result, expected)
-
-        # Weights are recorded in the header; weighted combine is still listed
-        # as an unimplemented imcombine option.
-        for i, weight in enumerate(weights, start=1):
-            assert result["comb"].header[f"WEIGH{i:03d}"] == weight
 
     def test_wcs_offsets_median_aux_analytical(self, tmp_path):
         """WCS-derived offsets should place each image at the analytical origin."""

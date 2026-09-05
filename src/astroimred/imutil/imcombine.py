@@ -426,6 +426,11 @@ def imcombine(
             "input uncertainties. Leave uncertainty_type='stddev'."
         )
 
+    if combine.lower() in {"weighted_average", "wvg"}:
+        combine = "average"
+    if weight is not None and combine.lower() not in {"average", "mean", "avg"}:
+        raise ValueError("weight can only be used with mean combination.")
+
     # === 1. Normalize defaults that must not use mutable signature values ===
     thresholds = None if thresholds is None else list(thresholds)
     zero_kw = None if zero_kw is None else dict(zero_kw)
@@ -582,9 +587,7 @@ def imcombine(
         "reject": rejname,
         "scale": scales,  # it is scales , NOT scale , as it was updated above.
         "zero": zeros,  # it is zeros  , NOT zero  , as it was updated above.
-        # `weights` are currently recorded in output headers, but astroimred has
-        # not implemented weighted imcombine semantics yet.
-        "weight": None,
+        "weight": weights if weight is not None else None,
         "zero_to_0th": zero_to_0th,
         "scale_to_0th": scale_to_0th,
         "scale_sigclip_kwargs": scale_kw,
@@ -870,6 +873,15 @@ imcombine.__doc__ = f"""A FITS-file helper for ``imcombiners.ndcombine``.
     {docstrings.OFFSETS_LONG(indent=4)}
 
     {docstrings.NDCOMB_PARAMETERS_COMMON(indent=4)}
+
+    weight : `float`, array-like, `str`, or `None`, optional
+        Finite, nonzero weights for mean/average combination; signs are retained.
+        Use a shared scalar, one value per image, or a statistic such as
+        ``"mean"`` computed within `scale_section` on each trimmed input.
+        Vectors follow sorted file-path order; CCDData lists retain input order.
+        Each pixel uses only finite, unmasked, unrejected samples; `None` gives
+        equal weights. No valid samples gives NaN; valid weights summing to zero
+        raise `ZeroDivisionError`. Weights do not affect rejection.
 
     imcmb_key : `str`
         The thing to add as ``IMCMBnnn`` in the output FITS file header. If
