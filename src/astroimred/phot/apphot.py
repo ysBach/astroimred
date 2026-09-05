@@ -93,6 +93,7 @@ def photometer(
     apsum_npixs: list[float] = []
     nbadpix: list[float] = []
 
+    variance = None if err is None else np.square(err)
     for aperture in _normalize_apertures(apertures):
         ap_positions = _normalize_positions(aperture)
         ap_sums, ap_npixs = _aperture_apsum(
@@ -119,7 +120,7 @@ def photometer(
         if err is not None:
             err_sums = _aperture_apsum(
                 aperture,
-                np.square(err),
+                variance,
                 mask=bad,
                 method=method,
                 return_npix=False,
