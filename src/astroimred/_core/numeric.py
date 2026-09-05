@@ -6,7 +6,6 @@ from typing import Literal
 import imcombiners.kernels as imck
 import numpy as np
 import reducers as rd
-import reducers.lowlevel as rdl
 from astropy.stats import sigma_clip
 from numpy.typing import ArrayLike
 
@@ -244,10 +243,10 @@ def normalize(
 
 
 def wvg(
-    val: np.ndarray,
-    err: np.ndarray | None = None,
-    var: np.ndarray | None = None,
-    ivar: np.ndarray | None = None,
+    val: ArrayLike,
+    err: ArrayLike | None = None,
+    var: ArrayLike | None = None,
+    ivar: ArrayLike | None = None,
     axis: int | tuple[int, ...] | None = None,
     return_se: bool = False,
 ) -> np.ndarray | tuple[np.ndarray, np.ndarray]:
@@ -259,9 +258,10 @@ def wvg(
         Values to average.
     err, var, ivar : array-like, optional
         Supply exactly one uncertainty representation: 1-sigma error,
-        variance, or inverse variance. The code prefers ivar > var > err when
-        multiple are given (because ivar is the most directly useful for
-        weighting, and ivar = 1/var = 1/err^2).
+        variance, or inverse variance. Scalars apply to every measurement;
+        arrays must broadcast to `val`. For a single integer `axis`, a 1-D
+        uncertainty array of the matching length supplies weights along that
+        axis, as in ``numpy.average``. Errors are assumed independent.
     axis : int, tuple of int, or None, optional
         Axis or axes along which to combine. If `None`, combine all values.
     return_se : bool, optional
@@ -278,36 +278,40 @@ def wvg(
     if provided != 1:
         raise ValueError("Exactly one of err, var, or ivar must be provided.")
 
-    if ivar is not None:
-        weight = np.asarray(ivar)
-    elif var is not None:
-        weight = 1 / np.asarray(var)
+    unc = np.asarray(ivar if ivar is not None else (var if var is not None else err))
+    # Convert integer errors before squaring, where fixed-width integers overflow.
+    if unc.dtype.kind in "biu":
+        unc = unc.astype(np.float64)
+    weight = unc if ivar is not None else (1 / (unc if var is not None else unc**2))
+
+    axis_weights = (
+        isinstance(axis, (int, np.integer))
+        and weight.ndim == 1
+        and weight.size == val.shape[axis]
+    )
+    # reducers reuses axis vectors without allocating a full weight array.
+    if not axis_weights:
+        weight = np.broadcast_to(weight, val.shape)
+    try:
+        weighted_sum, sum_weight = rd.sum(
+            val, weights=weight, axis=axis, return_sum_weights=True
+        )
+    except (NotImplementedError, TypeError) as exc:
+        # Tuple axes and complex inputs currently raise TypeError in reducers.
+        if isinstance(exc, TypeError) and not (
+            isinstance(axis, tuple) or np.iscomplexobj(val) or np.iscomplexobj(weight)
+        ):
+            raise
+        if axis_weights:
+            weight_shape = [1] * val.ndim
+            weight_shape[axis] = weight.size
+            weight = weight.reshape(weight_shape)
+        mean, sum_weight = np.average(
+            val, weights=np.broadcast_to(weight, val.shape), axis=axis, returned=True
+        )
     else:
-        weight = 1 / (np.asarray(err) ** 2)
-
-    if axis is None and val.shape == np.shape(weight):
-        weighted_sum, sum_weight = rdl.weighted_sum_and_weights_valid(val, weight)
-        mean = weighted_sum / sum_weight
-        if return_se:
-            return mean, 1 / np.sqrt(sum_weight)
-        return mean
-
-    if (
-        axis in {0, -1}
-        and np.shape(weight) != ()
-        and not (np.iscomplexobj(val) or np.iscomplexobj(weight))
-    ):
-        mean = rd.average(val, weights=weight, axis=axis)
-        if return_se:
-            sum_weight = rd.sum(weight, axis=axis)
-            return mean, 1 / np.sqrt(sum_weight)
-        return mean
-
-    wsum = np.sum(weight, axis=axis)
-    mean = np.sum(weight * val, axis=axis) / wsum
-    if return_se:
-        return mean, 1 / np.sqrt(wsum)
-    return mean
+        mean = np.divide(weighted_sum, sum_weight)
+    return (mean, 1 / np.sqrt(sum_weight)) if return_se else mean
 
 
 def quantile_lh(
