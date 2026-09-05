@@ -396,7 +396,7 @@ def imcombine(
     dtype_std: str = "float32",
     dtype_low: str | None = None,
     dtype_upp: str | None = None,
-    memlimit: float = 2.5e9,
+    memlimit: float | None = 2.5e9,
     verbose: bool = False,
     full: bool = False,
     imcmb_key: str = "$I",
@@ -413,6 +413,19 @@ def imcombine(
     overwrite: bool = False,
     checksum: bool = False,
 ) -> CCDData | dict:
+    if extension_uncertainty is not None:
+        raise NotImplementedError(
+            "extension_uncertainty is not supported: imcombine does not propagate "
+            "input uncertainties. Use extension_uncertainty=None for data-only "
+            "combination; output_std describes clipping spread, not propagated error."
+        )
+
+    if uncertainty_type != "stddev":
+        raise NotImplementedError(
+            "uncertainty_type is not supported: imcombine does not propagate "
+            "input uncertainties. Leave uncertainty_type='stddev'."
+        )
+
     # === 1. Normalize defaults that must not use mutable signature values ===
     thresholds = None if thresholds is None else list(thresholds)
     zero_kw = None if zero_kw is None else dict(zero_kw)
@@ -484,7 +497,9 @@ def imcombine(
     offsets, sh_comb = offseted_shape(
         shapes, offsets, method="outer", offset_order_xyz=False, intify_offsets=True
     )
-    compact_chunks = rejname not in {"minmax", "pclip"}
+    # Rejection counts and diagnostics depend on the full input-plane axis,
+    # including NaNs where offset images do not cover an output pixel.
+    compact_chunks = rejname is None
 
     mem_req, num_chunk, chunks = check_stack_memory(
         ncombine=ncombine,
@@ -494,6 +509,9 @@ def imcombine(
         memlimit=memlimit,
         offsets=offsets if compact_chunks else None,
         shapes=shapes if compact_chunks else None,
+        full=full,
+        reject=rejname,
+        thresholds=thresholds is not None,
     )
     if verbose:
         logger.info("Done.")
@@ -629,7 +647,12 @@ def imcombine(
             )
 
             if active_indices.size == 0:
-                comb[chunk_slices] = np.nan
+                # Use the same array cast as the final full-stack output.
+                # Assigning a Python NaN directly to integer arrays raises.
+                # An empty sum is zero; other combinations return NaN.
+                comb[chunk_slices] = np.asarray(
+                    0.0 if combine.lower() == "sum" else np.nan
+                ).astype(dtype)
                 if full and mask_total is None:
                     mask_total = np.zeros((ncombine, *sh_comb), dtype=bool)
                 del arr_i, mask_i, var_i
@@ -692,7 +715,21 @@ def imcombine(
             else:
                 comb[chunk_slices] = combined_i
 
-            del arr_i, mask_i, var_i
+            # Release chunk outputs before the next input chunk is loaded.
+            # Otherwise the previous tuple and its unpacked views stay resident.
+            if full:
+                del (
+                    comb_i,
+                    mask_rej_i,
+                    mask_thresh_i,
+                    std_i,
+                    low_i,
+                    upp_i,
+                    nit_i,
+                    output_flags_i,
+                    mask_total_i,
+                )
+            del combined_i, arr_i, mask_i, var_i
 
         if not full:
             std = low = upp = mask_total = output_flags_data = None
@@ -720,7 +757,7 @@ def imcombine(
         unit = "adu"
 
     cmt2hdr(hdr0, "h", t_ref=_t, verbose=verbose, s="Rejection and combination done")
-    comb = comb.astype(dtype)
+    comb = comb.astype(dtype, copy=False)
     comb = CCDData(data=comb, header=hdr0, unit=unit)
 
     if verbose:
@@ -824,9 +861,11 @@ imcombine.__doc__ = f"""A FITS-file helper for ``imcombiners.ndcombine``.
         `str`), or a `tuple` of `str` and `int`: ``(EXTNAME, EXTVER)``. If
         `None` (default), the *first extension with data* will be used. If
         `extension_uncertainty` or `extension_mask` is `None` (default),
-        uncertainty and mask are all ignored (turned off). Currently
-        error-propagation or weighted combine is not supported, so only
-        `extension_mask` can give difference to the output.
+        uncertainty and mask extensions are ignored (turned off).
+        A non-`None` `extension_uncertainty` raises `NotImplementedError` before
+        input I/O: uncertainty propagation is not supported. Attached CCDData
+        uncertainties are ignored without copying. `output_std` is clipping
+        spread, not propagated measurement uncertainty.
 
     {docstrings.OFFSETS_LONG(indent=4)}
 
@@ -849,11 +888,16 @@ imcombine.__doc__ = f"""A FITS-file helper for ``imcombiners.ndcombine``.
         time of each FITS file. This is used only if scaling is done for
         exposure time (see `scale`).
 
-    memlimit : float, optional
-        Approximate memory limit in bytes for the temporary FITS stack. If the
-        planned stack is larger, FITS inputs are read in row/column sections
-        after offsets are applied, each section is combined, and the final
-        output is stitched from the chunk results.
+    uncertainty_type : `str`, optional
+        Reserved for future uncertainty propagation. Only the default
+        ``"stddev"`` is accepted; other values raise `NotImplementedError`.
+
+    memlimit : `float` or `None`, optional
+        Approximate byte budget for input data, working buffers, and outputs.
+        If the estimate exceeds it, read and combine spatial chunks.
+        The final image and requested diagnostics remain in memory.
+        Statistical normalization may still read a full input image.
+        `None` or non-positive values disable chunking.
 
     output : path-like, optional
         The path to the final combined FITS file. It has dtype of `dtype` and
