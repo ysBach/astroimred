@@ -13,7 +13,7 @@ from astropy import units as u
 from astropy.io import fits
 from astropy.io.fits.verify import VerifyError
 from astropy.nddata import CCDData
-from astropy.table import MaskedColumn, Table
+from astropy.table import Table
 
 from .._core.types import HDUExt, HDULike, StrPathLike
 from ..logging import logger
@@ -42,7 +42,7 @@ SummaryInput = (
 def _write_summary(
     output: StrPathLike,
     summarytab: pd.DataFrame,
-    output_format: Literal["csv", "parquet", "fits"] | None = None,
+    output_format: Literal["csv", "parquet"] | None = None,
 ) -> None:
     """Write a summary using an explicit format or the legacy suffix rules."""
     output = Path(output)
@@ -54,31 +54,6 @@ def _write_summary(
         )
     if output_format == "parquet":
         summarytab.to_parquet(output, index=False)
-    elif output_format == "fits":
-        fits_table = Table()
-        for name, series in summarytab.items():
-            mask = series.isna().to_numpy()
-            # Missing headers make numeric columns object-typed. Infer their
-            # storage from the nonmissing values without stringifying numbers.
-            values = series[~mask].infer_objects().to_numpy()
-            if values.dtype.kind == "O":
-                if values.size == 0:
-                    values = np.empty(0, dtype=float)
-                elif pd.api.types.is_string_dtype(values):
-                    values = values.astype(str)
-            if values.dtype.kind not in "biufcSU":
-                raise TypeError(
-                    f"Column {name!r} has mixed or unsupported FITS table values; "
-                    "select compatible keywords or use CSV/Parquet output."
-                )
-            column = MaskedColumn(
-                name=name, length=len(series), dtype=values.dtype, mask=mask
-            )
-            column[~mask] = values
-            fits_table.add_column(column)
-        fits_table.write(
-            output, format="fits", overwrite=True, serialize_method="data_mask"
-        )
     else:
         summarytab.to_csv(output, index=False)
 
@@ -100,7 +75,7 @@ def fits_summary(
     nonunique_keys: bool = False,
     header_backend: str = "auto",
     *,
-    output_format: Literal["csv", "parquet", "fits"] | None = None,
+    output_format: Literal["csv", "parquet"] | None = None,
     **kwargs: object,
 ) -> pd.DataFrame | None:
     """Extract summary rows from FITS headers.
@@ -138,10 +113,9 @@ def fits_summary(
         `output_format=None`, ``.parq`` and ``.parquet`` use Parquet; all
         other suffixes (including ``.fits``) use CSV. Default: `None`.
 
-    output_format : {"csv", "parquet", "fits"} or `None`, optional
-        Explicit output format, overriding the suffix. ``"fits"`` writes a
-        binary table with separate mask columns for missing values; Astropy
-        reconstructs these on reading. `None` keeps suffix-based selection.
+    output_format : {"csv", "parquet"} or `None`, optional
+        Explicit pandas output format, overriding the suffix.
+        `None` keeps suffix-based selection.
 
     keywords : `list` or `str`(``"*"``), optional
         The `list` of the keywords to extract (keywords should be in `str`).
@@ -209,13 +183,6 @@ def fits_summary(
     I want to use ccdproc.ImageFileCollection instead of this, but it is about
     4 times slower than my `~astroimred.fitsmgmt.table.fits_summary`, so I cannot use it yet.
 
-    FITS export preserves missing values using Astropy's ``data_mask``
-    serialization. Other readers may expose the companion mask columns.
-    Entirely missing columns with no known dtype are stored as masked
-    floating-point columns. Incompatible mixed types, such as numbers and
-    strings in one column, raise `TypeError` naming the column. The returned
-    DataFrame is unchanged by export.
-
     Examples
     -------
 
@@ -246,52 +213,23 @@ def fits_summary(
     >>> # fullmatch = {"OBJECT": "Ves.*", "FILTER": "J"},
     >>> # querystr="EXPTIME in [2, 3]"
 
-    Write a FITS binary table explicitly:
+    Write a Parquet table explicitly:
 
     >>> summary = air.fits_summary(
     ...     "rawdata/*.fits", keywords=["OBJECT", "EXPTIME"],
-    ...     output="summary.fits", output_format="fits"
+    ...     output="summary.parquet", output_format="parquet"
     ... )
     """
     if inputs is None:
         return None
 
-    if output_format not in (None, "csv", "parquet", "fits"):
-        raise ValueError("output_format must be 'csv', 'parquet', 'fits', or None.")
+    if output_format not in (None, "csv", "parquet"):
+        raise ValueError("output_format must be 'csv', 'parquet', or None.")
 
     if isinstance(keywords, str) and keywords != "*":
         keywords = [keywords]
 
-    if nonunique_keys:
-        summ = fits_summary(
-            inputs=inputs,
-            extension=extension,
-            verify_fix=verify_fix,
-            fname_option=fname_option,
-            output=None,
-            keywords=keywords,
-            example_header=example_header,
-            sort_by=sort_by,
-            sort_map=sort_map,
-            fullmatch=fullmatch,
-            flags=flags,
-            querystr=querystr,
-            negate_fullmatch=negate_fullmatch,
-            nonunique_keys=False,
-            header_backend=header_backend,
-            output_format=output_format,
-            **kwargs,
-        )
-        logger.info("Unique keys that will be removed:")
-        for key in list(summ.columns):
-            if keywords is not None and key in keywords:
-                continue
-            if len(_uniq := summ[key].unique()) == 1:
-                logger.info(" * %-8s: %s", key, _uniq[0])
-                summ.pop(key)
-        if output is not None:
-            _write_summary(output, summ, output_format=output_format)
-        return summ
+    requested_keywords = keywords
 
     # Although there's no need to sort here because the real "sort" will be
     # done later based on ``sort_by`` column, I did it here because the full
@@ -461,7 +399,14 @@ def fits_summary(
                 missing_examples[k],
             )
 
-    summarytab = pd.DataFrame.from_dict(summarytab)
+    # Preserve Python integers alongside missing headers. Letting pandas
+    # infer these columns first would cast them to float and round large IDs.
+    summarytab = pd.DataFrame(
+        {
+            name: pd.Series(values, dtype=object) if name in missing_keys else values
+            for name, values in summarytab.items()
+        }
+    )
     summarytab = df_selector(
         summarytab,
         fullmatch=fullmatch,
@@ -478,6 +423,15 @@ def fits_summary(
         summarytab[k] = (
             summarytab[k].astype(object).where(pd.notna(summarytab[k]), None)
         )
+
+    if nonunique_keys:
+        logger.info("Unique keys that will be removed:")
+        for key in list(summarytab.columns):
+            if requested_keywords is not None and key in requested_keywords:
+                continue
+            if len(unique_values := summarytab[key].unique()) == 1:
+                logger.info(" * %-8s: %s", key, unique_values[0])
+                summarytab.pop(key)
 
     if output is not None:
         _write_summary(output, summarytab, output_format=output_format)
@@ -846,7 +800,7 @@ def select_fits(
     if selecting:
         for k, v in zip(type_key, type_val, strict=False):
             if isinstance(v, str):
-                match_mask = summary_table[k].str.match(v)
+                match_mask = summary_table[k].str.match(v, na=False)
                 summary_table = summary_table[match_mask]
                 fitslist = np.array(fitslist)[match_mask].tolist()
                 # NOTE: Is there a better way to do this?
