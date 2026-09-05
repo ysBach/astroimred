@@ -4,6 +4,7 @@ import contextlib
 import logging
 from collections.abc import Sequence
 from pathlib import Path
+from typing import Literal
 
 import numpy as np
 import pandas as pd
@@ -12,7 +13,7 @@ from astropy import units as u
 from astropy.io import fits
 from astropy.io.fits.verify import VerifyError
 from astropy.nddata import CCDData
-from astropy.table import Table
+from astropy.table import MaskedColumn, Table
 
 from .._core.types import HDUExt, HDULike, StrPathLike
 from ..logging import logger
@@ -38,14 +39,46 @@ SummaryInput = (
 )
 
 
-def _write_summary(output: StrPathLike, summarytab: pd.DataFrame) -> None:
-    """Write a summary table, choosing format from the file suffix."""
+def _write_summary(
+    output: StrPathLike,
+    summarytab: pd.DataFrame,
+    output_format: Literal["csv", "parquet", "fits"] | None = None,
+) -> None:
+    """Write a summary using an explicit format or the legacy suffix rules."""
     output = Path(output)
     logger.info('Saving the summary to "%s"', output)
 
-    suffix = output.suffix.lower()
-    if suffix in {".parq", ".parquet"}:
+    if output_format is None:
+        output_format = (
+            "parquet" if output.suffix.lower() in {".parq", ".parquet"} else "csv"
+        )
+    if output_format == "parquet":
         summarytab.to_parquet(output, index=False)
+    elif output_format == "fits":
+        fits_table = Table()
+        for name, series in summarytab.items():
+            mask = series.isna().to_numpy()
+            # Missing headers make numeric columns object-typed. Infer their
+            # storage from the nonmissing values without stringifying numbers.
+            values = series[~mask].infer_objects().to_numpy()
+            if values.dtype.kind == "O":
+                if values.size == 0:
+                    values = np.empty(0, dtype=float)
+                elif pd.api.types.is_string_dtype(values):
+                    values = values.astype(str)
+            if values.dtype.kind not in "biufcSU":
+                raise TypeError(
+                    f"Column {name!r} has mixed or unsupported FITS table values; "
+                    "select compatible keywords or use CSV/Parquet output."
+                )
+            column = MaskedColumn(
+                name=name, length=len(series), dtype=values.dtype, mask=mask
+            )
+            column[~mask] = values
+            fits_table.add_column(column)
+        fits_table.write(
+            output, format="fits", overwrite=True, serialize_method="data_mask"
+        )
     else:
         summarytab.to_csv(output, index=False)
 
@@ -66,6 +99,8 @@ def fits_summary(
     negate_fullmatch: bool = False,
     nonunique_keys: bool = False,
     header_backend: str = "auto",
+    *,
+    output_format: Literal["csv", "parquet", "fits"] | None = None,
     **kwargs: object,
 ) -> pd.DataFrame | None:
     """Extract summary rows from FITS headers.
@@ -99,9 +134,14 @@ def fits_summary(
         Default: ``'relative'``.
 
     output : `str` or path-like, optional
-        Output summary file. ``.parq`` and ``.parquet`` use parquet; other
-        suffixes use CSV.
-        Default: `None`.
+        Output summary file; an existing file is replaced. With
+        `output_format=None`, ``.parq`` and ``.parquet`` use Parquet; all
+        other suffixes (including ``.fits``) use CSV. Default: `None`.
+
+    output_format : {"csv", "parquet", "fits"} or `None`, optional
+        Explicit output format, overriding the suffix. ``"fits"`` writes a
+        binary table with separate mask columns for missing values; Astropy
+        reconstructs these on reading. `None` keeps suffix-based selection.
 
     keywords : `list` or `str`(``"*"``), optional
         The `list` of the keywords to extract (keywords should be in `str`).
@@ -169,6 +209,13 @@ def fits_summary(
     I want to use ccdproc.ImageFileCollection instead of this, but it is about
     4 times slower than my `~astroimred.fitsmgmt.table.fits_summary`, so I cannot use it yet.
 
+    FITS export preserves missing values using Astropy's ``data_mask``
+    serialization. Other readers may expose the companion mask columns.
+    Entirely missing columns with no known dtype are stored as masked
+    floating-point columns. Incompatible mixed types, such as numbers and
+    strings in one column, raise `TypeError` naming the column. The returned
+    DataFrame is unchanged by export.
+
     Examples
     -------
 
@@ -198,9 +245,19 @@ def fits_summary(
 
     >>> # fullmatch = {"OBJECT": "Ves.*", "FILTER": "J"},
     >>> # querystr="EXPTIME in [2, 3]"
+
+    Write a FITS binary table explicitly:
+
+    >>> summary = air.fits_summary(
+    ...     "rawdata/*.fits", keywords=["OBJECT", "EXPTIME"],
+    ...     output="summary.fits", output_format="fits"
+    ... )
     """
     if inputs is None:
         return None
+
+    if output_format not in (None, "csv", "parquet", "fits"):
+        raise ValueError("output_format must be 'csv', 'parquet', 'fits', or None.")
 
     if isinstance(keywords, str) and keywords != "*":
         keywords = [keywords]
@@ -222,6 +279,7 @@ def fits_summary(
             negate_fullmatch=negate_fullmatch,
             nonunique_keys=False,
             header_backend=header_backend,
+            output_format=output_format,
             **kwargs,
         )
         logger.info("Unique keys that will be removed:")
@@ -232,7 +290,7 @@ def fits_summary(
                 logger.info(" * %-8s: %s", key, _uniq[0])
                 summ.pop(key)
         if output is not None:
-            _write_summary(output, summ)
+            _write_summary(output, summ, output_format=output_format)
         return summ
 
     # Although there's no need to sort here because the real "sort" will be
@@ -422,7 +480,7 @@ def fits_summary(
         )
 
     if output is not None:
-        _write_summary(output, summarytab)
+        _write_summary(output, summarytab, output_format=output_format)
 
     return summarytab
 
