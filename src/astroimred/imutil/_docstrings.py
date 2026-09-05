@@ -171,6 +171,13 @@ scale_to_0th : `bool`, optional.
 zero_section, scale_section : `str`, optional.
     The sections used for zeroing and scaling. These must be in FITS section
     format, and are the sections **AFTER** trimming based on `trimsec`.
+    Statistical zero/scale/weight values exclude input-masked and nonfinite
+    pixels. A section with no finite unmasked pixels raises `ValueError` naming
+    the parameter and input index. Numeric calibration values are unaffected.
+    Thresholds and algorithm rejections do not select normalization samples.
+    Callable statistics receive the selected pixels as an ``(M, 1)`` array
+    with excluded samples replaced by NaN; use a NaN-aware statistic and
+    return one finite value (nonzero for scale or weight).
 
 zero_kw, scale_kw : `dict`
     Used only if `scale` or `zero` are sigma-clipped mean, median, etc (ending with ``_sc`` such as

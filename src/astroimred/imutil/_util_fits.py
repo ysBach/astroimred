@@ -80,19 +80,45 @@ def _resolve_plane_values(
     sigclip_kwargs: dict[str, Any] | None = None,
     section: str | None = None,
     nonzero: bool = False,
+    mask: np.ndarray | None = None,
+    input_index: int | None = None,
 ) -> np.ndarray:
-    """Resolve scalar, vector, callable, or named-stat values via imcombiners."""
+    """Resolve plane values, excluding masked/nonfinite statistic samples.
+
+    Callable statistics receive the existing ``(M, 1)`` plane layout with
+    excluded samples replaced by NaN in an owned workspace. Numeric values
+    are independent of sample validity.
+    """
     if value is None:
         fill = 1.0 if nonzero else 0.0
         return np.full(arr.shape[0], fill, dtype=float)
 
     if isinstance(value, str) or callable(value):
         workspace = _stat_workspace(np.asarray(arr), section)
+        invalid = ~np.isfinite(workspace)
+        if mask is not None:
+            invalid |= _stat_workspace(np.broadcast_to(mask, arr.shape), section)
+        empty = np.flatnonzero(np.all(invalid, axis=(1, 2)))
+        if empty.size:
+            location = (
+                f"input {input_index}"
+                if input_index is not None
+                else f"planes {empty.tolist()}"
+            )
+            raise ValueError(
+                f"{name} statistic has no finite unmasked pixels in the "
+                f"selected section for {location}."
+            )
         # The resolver casts its result to the workspace dtype. Integer image
         # storage must not truncate fractional statistics such as the mean.
+        # Own the workspace before replacing samples or invoking user code.
+        has_invalid = bool(invalid.any())
         workspace = workspace.astype(
-            np.result_type(workspace.dtype, np.nan), copy=False
+            np.result_type(workspace.dtype, np.nan),
+            copy=has_invalid or callable(value),
         )
+        if has_invalid:
+            workspace[invalid] = np.nan
     else:
         # Numeric calibration values are independent of the stored pixel dtype.
         workspace = np.empty((arr.shape[0], 1, 1), dtype=float)
@@ -119,6 +145,8 @@ def _resolve_zsw(
     scale_kw: dict[str, Any] | None,
     zero_section: str | None,
     scale_section: str | None,
+    mask: np.ndarray | None = None,
+    input_index: int | None = None,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Resolve zero/scale/weight values with imcombiners plane statistics."""
     return (
@@ -128,6 +156,8 @@ def _resolve_zsw(
             zero,
             sigclip_kwargs=zero_kw,
             section=zero_section,
+            mask=mask,
+            input_index=input_index,
         ),
         _resolve_plane_values(
             "scale",
@@ -136,6 +166,8 @@ def _resolve_zsw(
             sigclip_kwargs=scale_kw,
             section=scale_section,
             nonzero=True,
+            mask=mask,
+            input_index=input_index,
         ),
         _resolve_plane_values(
             "weight",
@@ -143,6 +175,8 @@ def _resolve_zsw(
             weight,
             section=scale_section,
             nonzero=True,
+            mask=mask,
+            input_index=input_index,
         ),
     )
 
@@ -894,6 +928,8 @@ def calculate_zsw(
     zero_section: str | None,
     scale_section: str | None,
     scales: np.ndarray,
+    *,
+    mask: np.ndarray | None = None,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Calculate global zero, scale, and weight values before chunking.
 
@@ -921,6 +957,8 @@ def calculate_zsw(
                 extension_mask=extension_mask,
                 extension_uncertainty=extension_uncertainty,
             )
+            if mask is not None:
+                _mask |= mask[i,]
             workspace = data[None, :]
         else:
             # Numeric arguments only need a plane count and dtype for validation.
@@ -939,6 +977,8 @@ def calculate_zsw(
             scale_kw=scale_kw,
             zero_section=zero_section if needs_data else None,
             scale_section=scale_section if needs_data else None,
+            mask=_mask[None, :] if needs_data else None,
+            input_index=i,
         )
         zeros[i], scales[i], weights[i] = z_i[0], s_i[0], w_i[0]
         # Do not keep the previous image alive while reading the next one.
@@ -1130,6 +1170,8 @@ def load_full_stack(
             scale_kw=scale_kw,
             zero_section=zero_section,
             scale_section=scale_section,
+            mask=item_mask[None, :],
+            input_index=i,
         )
         zeros[i] = z_i[0]
         scales[i] = s_i[0]
