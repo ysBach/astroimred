@@ -227,16 +227,16 @@ def _compose_trim_data_slices(
         raw_shape, trim_slices, data_slices, strict=False
     ):
         t_start, _t_stop, t_step = trim_slice.indices(int(raw_size))
-        if t_step <= 0:
-            raise ValueError("Negative-step trimsec is not supported in chunked load.")
-
         trimmed_size = len(range(*trim_slice.indices(int(raw_size))))
         d_start, d_stop, d_step = data_slice.indices(trimmed_size)
         if d_step != 1:
             raise ValueError("Non-unit chunk slice steps are not supported.")
-        slices.append(
-            slice(t_start + d_start * t_step, t_start + d_stop * t_step, t_step)
-        )
+        stop = t_start + d_stop * t_step
+        # A negative stop is relative to the raw array's end. For a reverse
+        # slice reaching pixel zero, use None to mean before the array begins.
+        if t_step < 0 and stop < 0:
+            stop = None
+        slices.append(slice(t_start + d_start * t_step, stop, t_step))
     return tuple(slices)
 
 
