@@ -749,7 +749,7 @@ def select_fits(
         summary_table = inputs.to_pandas()
         fitslist = summary_table[table_filecol].to_list()
     elif isinstance(inputs, pd.DataFrame):
-        summary_table = inputs
+        summary_table = inputs.copy()
         fitslist = summary_table[table_filecol].to_list()
     else:
         # No need to sort here because the real "sort" will be done later in fits_summary
@@ -788,12 +788,13 @@ def select_fits(
     if selecting:
         for k, v in zip(type_key, type_val, strict=False):
             if isinstance(v, str):
-                match_mask = summary_table[k].str.match(v)
-                summary_table = summary_table[match_mask]
-                fitslist = np.array(fitslist)[match_mask].tolist()
-                # NOTE: Is there a better way to do this?
-                with contextlib.suppress(ValueError):
-                    summary_table.reset_index(inplace=True, drop=True)
+                match_mask = summary_table[k].astype("string").str.match(v, na=False)
+                summary_table = summary_table[match_mask].reset_index(drop=True)
+                fitslist = [
+                    item
+                    for item, keep in zip(fitslist, match_mask, strict=False)
+                    if keep
+                ]
             else:  # not used as regex
                 _type_key.append(k)
                 _type_val.append(v)
