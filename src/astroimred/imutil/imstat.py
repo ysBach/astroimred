@@ -5,7 +5,7 @@ from collections.abc import Sequence
 
 import numpy as np
 import reducers.lowlevel as rdl
-from astro_ndslice import slicefy
+from astro_ndslice import listify, slicefy
 from astropy import units as u
 from astropy.io import fits
 from astropy.visualization import ZScaleInterval
@@ -200,17 +200,38 @@ def give_stats(
     num_extrema : 2-tuple of int or `None`, optional
         Number of low and high extreme values to report as ``(n_lo, n_hi)``. If
         `None`, extrema calculation is skipped.
+
+    Notes
+    -----
+    Sections may have different sizes. Overlapping sections count their shared
+    pixels once per section. Masks and non-finite pixels are excluded.
+
+    Raises
+    ------
+    ValueError
+        If no finite unmasked pixels remain in the selected sections.
     """
     data, hdr = _data_header_from_array_or_path(item, extension=extension)
     if mask is not None:
-        data = np.array(data, copy=True)
-        data[mask] = np.nan
+        mask = np.broadcast_to(np.asarray(mask, dtype=bool), data.shape)
 
     if statsecs is not None:
-        statsecs = [statsecs] if isinstance(statsecs, str) else list(statsecs)
-        data = np.array([data[slicefy(sec)] for sec in statsecs])
+        if isinstance(statsecs, tuple) and all(isinstance(s, slice) for s in statsecs):
+            statsecs = [statsecs]
+        else:
+            statsecs = listify(statsecs)
+        samples = []
+        for sec in statsecs:
+            section = slicefy(sec, ndim=data.ndim)
+            sample = data[section]
+            samples.append(sample.ravel() if mask is None else sample[~mask[section]])
+        data = np.concatenate(samples) if samples else np.empty(0, dtype=data.dtype)
+    elif mask is not None:
+        data = data[~mask]
 
     data = _finite_reducer_values(data)
+    if data.size == 0:
+        raise ValueError("No finite unmasked pixels remain in the selected sections.")
 
     std, mean = rdl.std_mean_valid(data, ddof=1)
     d_min, d_max = rdl.minmax_valid(data)

@@ -6,6 +6,7 @@ All expected values are analytically derived.
 
 import astroapers as aap
 import numpy as np
+import pytest
 from numpy.testing import assert_allclose
 
 from astroimred.phot.radprof import (
@@ -389,3 +390,63 @@ class TestRadprofEdgeCases:
         # Should still return values
         assert len(vals) > 0
         assert_allclose(vals, 10.0, rtol=1e-10)
+
+    def test_radprof_pix_with_full_frame_mask(self):
+        """radprof_pix must accept full-frame masks and exclude masked pixels."""
+        from astropy.nddata import CCDData
+
+        img = np.ones((100, 100), dtype=float)
+        mask = np.zeros((100, 100), dtype=bool)
+        mask[51, 50] = True
+
+        r, vals = radprof_pix(img, pos=(50, 50), mask=mask, rmax=10)
+        assert len(r) > 0
+        assert_allclose(vals, 1.0)
+
+        ccd = CCDData(img, mask=mask, unit="adu")
+        r_ccd, vals_ccd = radprof_pix(ccd, pos=(50, 50), mask=ccd.mask, rmax=10)
+        assert len(r_ccd) == len(r)
+        assert_allclose(r_ccd, r)
+        assert_allclose(vals_ccd, vals)
+
+        r_edge, vals_edge = radprof_pix(img, pos=(5, 5), mask=mask, rmax=10)
+        assert len(r_edge) > 0
+        assert_allclose(vals_edge, 1.0)
+
+    def test_radprof_pix_fit_with_full_frame_mask(self):
+        """radprof_pix with fitfunc must run with full-frame mask."""
+        img = np.ones((100, 100), dtype=float)
+        mask = np.zeros((100, 100), dtype=bool)
+        mask[51, 50] = True
+
+        r, vals, fitter, popt, fwhm = radprof_pix(
+            img, pos=(50, 50), mask=mask, rmax=10, fitfunc="gauss"
+        )
+        assert len(r) > 0
+        assert np.isfinite(fwhm)
+
+    def test_radprof_pix_with_scalar_mask(self):
+        """radprof_pix must accept scalar boolean masks."""
+        img = np.ones((50, 50), dtype=float)
+        r_unmasked, vals_unmasked = radprof_pix(img, pos=(25, 25), mask=False, rmax=5)
+        assert len(r_unmasked) > 0
+        assert_allclose(vals_unmasked, 1.0)
+
+        r_masked, vals_masked = radprof_pix(img, pos=(25, 25), mask=True, rmax=5)
+        assert len(r_masked) == 0
+
+    @pytest.mark.parametrize("shape", [(5,), (1, 5), (5, 1)])
+    def test_radprof_pix_broadcast_cutout_mask(self, shape: tuple[int, ...]) -> None:
+        mask = np.array([False, False, True, False, False]).reshape(shape)
+        radii, values = radprof_pix(np.ones((11, 11)), (5, 5), mask=mask, rmax=2)
+        assert radii.size == 8
+        assert_allclose(values, 1)
+
+    def test_radprof_pix_mask_is_explicit_for_ccddata(self) -> None:
+        from astropy.nddata import CCDData
+
+        ccd = CCDData(np.ones((11, 11)), mask=np.ones((11, 11), dtype=bool), unit="adu")
+        radii, _ = radprof_pix(ccd, (5, 5), rmax=2)
+        assert radii.size == 13
+        masked_radii, _ = radprof_pix(ccd, (5, 5), mask=ccd.mask, rmax=2)
+        assert masked_radii.size == 0

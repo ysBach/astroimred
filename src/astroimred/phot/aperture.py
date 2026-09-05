@@ -36,8 +36,8 @@ def cutout_from_ap(
 
     Parameters
     ----------
-    ap : `~astroapers.Aperture`
-        The aperture object.
+    ap : astroapers aperture object
+        The aperture object, such as `~astroapers.CircAp` or `~astroapers.EllipAp`.
     ccd : `~astropy.nddata.CCDData` or `numpy.ndarray`
         The CCD data.
     method : str, optional
@@ -48,10 +48,11 @@ def cutout_from_ap(
     Returns
     -------
     `~astropy.nddata.Cutout2D` or list of `~astropy.nddata.Cutout2D`
-        The cutout objects.
+        Cutouts trimmed to the image boundary for every method, with matching
+        data, coordinates, and WCS when supplied by `ccd`.
     """
     data = ccd.data if isinstance(ccd, CCDData) else np.asarray(ccd)
-    positions = np.asarray(ap.positions, dtype=np.float64).reshape(-1, 2)
+    wcs = getattr(ccd, "wcs", None) if isinstance(ccd, CCDData) else None
     if method not in {"bbox", "center", "exact"}:
         raise ValueError(f"Unsupported aperture method: {method!r}")
     boxes = ap.bboxes()
@@ -61,10 +62,11 @@ def cutout_from_ap(
     elif method == "exact":
         cutout_data = ap.weighted_cutout(data, fill_value=fill_value)
     cuts = []
-    for idx, (pos, box) in enumerate(zip(positions, boxes, strict=True)):
-        cut = Cutout2D(data, position=pos, size=box.shape)
+    for idx, (pos, box) in enumerate(zip(ap.positions, boxes, strict=True)):
+        cut = Cutout2D(data, position=pos, size=box.shape, mode="trim", wcs=wcs)
         if method != "bbox":
-            cut.data = cutout_data[idx]
+            sl_cut = box.overlap_slices(data.shape)[1]
+            cut.data = cutout_data[idx][sl_cut]
         cuts.append(cut)
     return cuts[0] if len(cuts) == 1 else cuts
 
