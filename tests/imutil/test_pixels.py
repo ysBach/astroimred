@@ -68,3 +68,38 @@ class TestPixelTools:
         expected = np.linspace(40, 89, 50)
         np.testing.assert_allclose(out.data[0, 40:90], expected)
         np.testing.assert_allclose(out.data[-1, 40:90], expected)
+
+
+def test_fixpix_edges_and_full_axis() -> None:
+    """Boundary runs copy their one available neighbor; a full axis stays put."""
+    for mask, expected in [
+        ([True, True, False, False, False], [2, 2, 2, 3, 4]),
+        ([False, False, False, True, True], [0, 1, 2, 2, 2]),
+        ([True] * 5, [0, 1, 2, 3, 4]),
+        ([False] * 5, [0, 1, 2, 3, 4]),
+    ]:
+        data = np.arange(5, dtype=float)
+        bad = np.array(mask)
+        result = pixels.fixpix(data, bad, update_header=False, verbose=False)
+        np.testing.assert_array_equal(result.data, expected)
+        np.testing.assert_array_equal(data, np.arange(5))
+        np.testing.assert_array_equal(bad, mask)
+
+
+def test_fixpix_nd_strided_mask_axis_priority() -> None:
+    """Tied N-D runs use the requested axis even with reversed array strides."""
+    data = np.zeros((5, 5, 5))
+    data[1, 2, 2], data[3, 2, 2] = 10, 20
+    data[2, 1, 2], data[2, 3, 2] = 30, 50
+    data[2, 2, 1], data[2, 2, 3] = 70, 90
+    mask = np.zeros((5, 5, 5), dtype=bool)
+    mask[2, 2, 2] = True
+    for priority, expected in [((0, 1, 2), 15), ((1, 2, 0), 40), ((2, 1, 0), 80)]:
+        result = pixels.fixpix(
+            data[::-1],
+            mask[::-1],
+            priority=priority,
+            update_header=False,
+            verbose=False,
+        )
+        assert result.data[2, 2, 2] == expected
