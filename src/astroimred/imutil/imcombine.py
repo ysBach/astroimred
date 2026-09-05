@@ -315,50 +315,14 @@ def _as_scalar_ccdclip_parameter(name: str, value: str | npt.ArrayLike | None) -
     return first
 
 
-def _subset_plane_values_for_active_chunk(
-    values: npt.ArrayLike,
-    active_indices: np.ndarray,
-    *,
-    reference_to_0th: bool,
-    operation: str,
-) -> np.ndarray:
-    """Return active per-plane values while preserving image-0 rebasing."""
-    arr = np.asarray(values, dtype=float).reshape(-1)
-    if arr.size == 0:
-        raise ValueError("Per-plane values must not be empty.")
-    if reference_to_0th:
-        if operation == "subtract":
-            arr = arr - arr[0]
-        elif operation == "divide":
-            arr = arr / arr[0]
-        else:
-            raise ValueError(f"Unknown plane-value operation: {operation}")
-    return arr[active_indices]
-
-
 def _ndckw_for_active_chunk(
     ndc_kw: dict[str, object], active_indices: np.ndarray
 ) -> dict[str, object]:
-    """Subset plane-wise kwargs for a compact chunk stack."""
+    """Select the original images' resolved calibration for a compact chunk."""
     chunk_kw = dict(ndc_kw)
-    chunk_kw["zero"] = _subset_plane_values_for_active_chunk(
-        ndc_kw["zero"],
-        active_indices,
-        reference_to_0th=bool(ndc_kw["zero_to_0th"]),
-        operation="subtract",
-    )
-    chunk_kw["scale"] = _subset_plane_values_for_active_chunk(
-        ndc_kw["scale"],
-        active_indices,
-        reference_to_0th=bool(ndc_kw["scale_to_0th"]),
-        operation="divide",
-    )
-    if ndc_kw["weight"] is not None:
-        chunk_kw["weight"] = np.asarray(ndc_kw["weight"], dtype=float).reshape(-1)[
-            active_indices
-        ]
-    chunk_kw["zero_to_0th"] = False
-    chunk_kw["scale_to_0th"] = False
+    for name in ("zero", "scale", "weight"):
+        if ndc_kw[name] is not None:
+            chunk_kw[name] = ndc_kw[name][active_indices]
     return chunk_kw
 
 
@@ -664,14 +628,23 @@ def imcombine(
         s=f"Loaded {ncombine} FITS, calculated zero, scale, weights",
     )
 
+    # Rebase once in calibration precision for both execution paths. The
+    # backend casts to the pixel dtype; doing that before subtraction can
+    # erase small zero differences. Its resolver also preserves scalar
+    # calibration when there is only one input image.
+    calibration_workspace = np.empty((ncombine, 1, 1), dtype=float)
     ndc_kw = {
         "combine": combine,
         "reject": rejname,
-        "scale": scales,  # it is scales , NOT scale , as it was updated above.
-        "zero": zeros,  # it is zeros  , NOT zero  , as it was updated above.
+        "scale": imc.resolve_zero_scale(
+            "scale", scales, calibration_workspace, nonzero=True, to_0th=scale_to_0th
+        ).reshape(-1),
+        "zero": imc.resolve_zero_scale(
+            "zero", zeros, calibration_workspace, to_0th=zero_to_0th
+        ).reshape(-1),
         "weight": weights if weight is not None else None,
-        "zero_to_0th": zero_to_0th,
-        "scale_to_0th": scale_to_0th,
+        "zero_to_0th": False,
+        "scale_to_0th": False,
         "scale_sigclip_kwargs": scale_kw,
         "zero_sigclip_kwargs": zero_kw,
         "thresholds": thresholds,

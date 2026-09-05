@@ -319,3 +319,113 @@ def test_uncovered_sum_mosaic_uses_zero(tmp_path: Path) -> None:
     np.testing.assert_array_equal(result.data[:, :4], 1)
     np.testing.assert_array_equal(result.data[:, 4:20], 0)
     np.testing.assert_array_equal(result.data[:, 20:], 2)
+
+
+@pytest.mark.parametrize("memlimit", [None, 160])
+@pytest.mark.parametrize("diagnostics", [None, "full"])
+@pytest.mark.parametrize(
+    ("calibration", "expected"),
+    [({"zero": 3.0}, 7.0), ({"scale": 2.0}, 5.0), ({"zero": 3.0, "scale": 2.0}, 3.5)],
+)
+def test_single_image_keeps_scalar_calibration(
+    memlimit: float | None, diagnostics: str | None, calibration: dict, expected: float
+) -> None:
+    """A single image's scalar calibration is not rebased to zero and one."""
+    image = CCDData(np.full((4, 5), 10, dtype=np.float32), unit="adu")
+    result = imcombine(
+        [image],
+        memlimit=memlimit,
+        diagnostics=diagnostics,
+        return_dict=True,
+        **calibration,
+    )
+    combined = result if diagnostics is None else result["comb"]
+    np.testing.assert_array_equal(combined.data, expected)
+
+
+@pytest.mark.parametrize("memlimit", [None, 250])
+@pytest.mark.parametrize("diagnostics", [None, "full"])
+def test_zero_offsets_rebase_before_float32_rounding(
+    memlimit: float | None, diagnostics: str | None
+) -> None:
+    """The reference cancels before calibration is cast to the pixel dtype."""
+    images = [
+        CCDData(np.full((4, 5), 10, dtype=np.float32), unit="adu") for _ in range(3)
+    ]
+    result = imcombine(
+        images,
+        zero=[100_000_000, 100_000_001, 100_000_002],
+        weight=[1, 2, 1],
+        memlimit=memlimit,
+        diagnostics=diagnostics,
+        return_dict=True,
+    )
+    combined = result if diagnostics is None else result["comb"]
+    # Relative zeros are [0, 1, 2]: (10 + 2*9 + 8) / 4 = 9.
+    np.testing.assert_array_equal(combined.data, 9)
+
+
+@pytest.mark.parametrize("memlimit", [None, 250])
+def test_scale_ratios_rebase_before_float32_conversion(memlimit: float | None) -> None:
+    """Representable scale ratios do not require representable raw scales."""
+    images = [
+        CCDData(np.full((4, 5), value, dtype=np.float32), unit="adu")
+        for value in [10, 20, 40]
+    ]
+    result = imcombine(images, scale=[1e40, 2e40, 4e40], memlimit=memlimit)
+    np.testing.assert_array_equal(result.data, 10)
+
+
+@pytest.mark.parametrize("from_fits", [False, True])
+@pytest.mark.parametrize("memlimit", [None, 550])
+@pytest.mark.parametrize(
+    "trimsec",
+    [
+        (slice(None, None, -1), slice(None, None, -2)),
+        (slice(8, 1, -2), slice(10, 2, -2)),
+    ],
+)
+def test_reversed_trim_preserves_data_and_mask(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    from_fits: bool,
+    memlimit: float | None,
+    trimsec: tuple[slice, ...],
+) -> None:
+    """Negative-step slices use the same pixels and masks at any budget."""
+    base = np.arange(120, dtype=np.float32).reshape(10, 12)
+    inputs = []
+    for i in range(3):
+        mask = np.zeros(base.shape, dtype=bool)
+        mask[8, 10] = i == 2
+        ccd = CCDData(base + 10 * i, mask=mask, unit="adu")
+        if from_fits:
+            path = tmp_path / f"reverse_{i}.fits"
+            ccd.write(path)
+            inputs.append(path)
+        else:
+            inputs.append(ccd)
+    if from_fits and memlimit is not None:
+        original = fits.PrimaryHDU._get_scaled_image_data
+
+        def partial_read(self, offset: int, shape: tuple[int, ...]) -> np.ndarray:
+            assert np.prod(shape) < base.size
+            return original(self, offset, shape)
+
+        monkeypatch.setattr(fits.PrimaryHDU, "_get_scaled_image_data", partial_read)
+    result = imcombine(
+        inputs,
+        trimsec=trimsec,
+        extension_mask="MASK" if from_fits else None,
+        memlimit=memlimit,
+        full=True,
+        return_dict=True,
+    )
+    expected = base + 10
+    expected[8, 10] = base[8, 10] + 5
+    np.testing.assert_array_equal(result["comb"].data, expected[trimsec])
+    expected_mask = np.zeros((3, *base.shape), dtype=bool)
+    expected_mask[2, 8, 10] = True
+    np.testing.assert_array_equal(
+        result["mask_total"], expected_mask[(slice(None), *trimsec)]
+    )
