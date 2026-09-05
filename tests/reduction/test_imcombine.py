@@ -242,7 +242,7 @@ class TestNDCombine:
             maxiters=5,
             ddof=1,
             nkeep=1,
-            full=True,
+            diagnostics="simple",
         )
 
         expected_mask = np.zeros(arr.shape, dtype=bool)
@@ -356,7 +356,7 @@ class TestImCombine:
             "dtype": "float32",
         }
         full = imcombine(paths, memlimit=1e9, **common)
-        chunked = imcombine(paths, memlimit=500, **common)
+        chunked = imcombine(paths, memlimit=560 + 500, **common)
 
         np.testing.assert_allclose(
             chunked["comb"].data, full["comb"].data, rtol=1e-6, equal_nan=True
@@ -405,7 +405,7 @@ class TestImCombine:
             reject="none",
             full=True,
             return_dict=True,
-            memlimit=900,
+            memlimit=27_720 + 900,  # retained output bytes + chunk budget
         )
 
         expected = _expected_no_reject(images, raw_offsets, combine="average")
@@ -436,7 +436,7 @@ class TestImCombine:
             reject="none",
             full=True,
             return_dict=True,
-            memlimit=900,
+            memlimit=27_720 + 900,  # retained output bytes + chunk budget
         )
 
         expected = _expected_no_reject(
@@ -465,7 +465,7 @@ class TestImCombine:
             "dtype": "float32",
         }
         full = imcombine(paths, memlimit=1e9, **common)
-        chunked = imcombine(paths, memlimit=900, **common)
+        chunked = imcombine(paths, memlimit=9_680 + 900, **common)
 
         _assert_imcombine_full(
             chunked,
@@ -522,7 +522,7 @@ class TestImCombine:
             offsets=np.array([[0, 0], [0, 80], [20, 160]]),
             combine="average",
             reject="none",
-            memlimit=900,
+            memlimit=15_840 + 900,  # retained output bytes + chunk budget
         )
 
         assert full_shape_loads == 0
@@ -552,7 +552,7 @@ class TestImCombine:
             reject="none",
             full=True,
             return_dict=True,
-            memlimit=400,
+            memlimit=294 + 400,  # retained output bytes + chunk budget
         )
         expected = _expected_no_reject(
             images, raw_offsets, combine="average", zero=zeros, scale=scales
@@ -582,7 +582,7 @@ class TestImCombine:
             reject="none",
             full=True,
             return_dict=True,
-            memlimit=500,
+            memlimit=294 + 500,  # retained output bytes + chunk budget
         )
         expected = _expected_no_reject(images, raw_offsets, combine="median")
         _assert_imcombine_full(result, expected)
@@ -608,7 +608,7 @@ class TestImCombine:
                 reject="none",
                 full=True,
                 return_dict=True,
-                memlimit=300,
+                memlimit=336 + 300,  # retained output bytes + chunk budget
             )
         expected = _expected_no_reject(images, raw_offsets, combine="lmedian")
         _assert_imcombine_full(result, expected)
@@ -643,7 +643,7 @@ class TestImCombine:
             n_minmax=[1, 1],
             full=True,
             return_dict=True,
-            memlimit=300,
+            memlimit=440 + 300,  # retained output bytes + chunk budget
         )
         expected_mask = np.zeros((4, *base.shape), dtype=bool)
         expected_mask[0] = True
@@ -684,7 +684,7 @@ class TestImCombine:
             nkeep=1,
             full=True,
             return_dict=True,
-            memlimit=300,
+            memlimit=520 + 300,  # retained output bytes + chunk budget
         )
 
         expected_mask = np.zeros((4, *base.shape), dtype=bool)
