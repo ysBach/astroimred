@@ -583,7 +583,7 @@ def imcombine(
         "gain": gns,  # it is gns, not gain   , as it was updated above.
         "snoise": sns,  # it is sns, not snoise , as it was updated above.
         "pclip": pclip,
-        "full": full,
+        "diagnostics": "simple" if full else None,
     }
     if rejname == "ccdclip":
         ndc_kw["rdnoise"] = _as_scalar_ccdclip_parameter("rdnoise", rds)
