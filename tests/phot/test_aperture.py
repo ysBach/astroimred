@@ -121,3 +121,58 @@ def test_cutout_from_ap_rejects_unknown_method():
 
     with pytest.raises(ValueError):
         cutout_from_ap(ap, data, method="not-a-method")
+
+
+def test_cutout_from_ap_edge_coordinates_and_shape():
+    """Cutouts crossing image boundaries must maintain trimmed shape and native coordinates."""
+    from astropy.wcs import WCS
+
+    wcs = WCS(naxis=2)
+    wcs.wcs.crpix = [50, 50]
+    wcs.wcs.cdelt = [0.1, 0.1]
+    wcs.wcs.crval = [10.0, 20.0]
+    wcs.wcs.ctype = ["RA---TAN", "DEC--TAN"]
+
+    data = CCDData(np.ones((100, 100)), wcs=wcs, unit="adu")
+    ap = aap.EllipAp((5.3, 5.7), a=10.2, b=4.6, theta=0.3)
+    pos = ap.positions[0]
+    box = ap.bboxes()[0]
+    sl_img, _ = box.overlap_slices(data.shape)
+    expected_shape = (
+        sl_img[0].stop - sl_img[0].start,
+        sl_img[1].stop - sl_img[1].start,
+    )
+
+    for method in ("bbox", "center", "exact"):
+        cut = cutout_from_ap(ap, data, method=method, fill_value=np.nan)
+        assert cut.shape == expected_shape
+        assert cut.data.shape == expected_shape
+        cut_pos = cut.to_cutout_position(pos)
+        assert_allclose(cut.input_position_original, pos)
+        assert_allclose(cut.input_position_cutout, cut_pos)
+        orig_pos = cut.to_original_position(cut_pos)
+        assert_allclose(orig_pos, pos, atol=1e-12)
+        assert_allclose(cut_pos, (pos[0] - sl_img[1].start, pos[1] - sl_img[0].start))
+        assert_allclose(
+            cut.wcs.pixel_to_world_values(*cut_pos),
+            wcs.pixel_to_world_values(*pos),
+            rtol=0,
+            atol=1e-10,
+        )
+        if method == "bbox":
+            assert_allclose(cut.data, data.data[sl_img])
+        else:
+            weights = ap.weights_center() if method == "center" else ap.weights_exact()
+            local_weights = weights[0][box.overlap_slices(data.shape)[1]]
+            np.testing.assert_allclose(
+                cut.data[local_weights > 0], local_weights[local_weights > 0]
+            )
+
+
+def test_cutout_from_ap_integer_preserves_dtype():
+    """Integer images with bbox method should preserve their integer dtype without padding error."""
+    int_data = np.arange(100, dtype=np.int32).reshape(10, 10)
+    ap = aap.CircAp((0.5, 0.5), r=3)
+    cut = cutout_from_ap(ap, int_data, method="bbox")
+    assert cut.data.dtype == np.int32
+    assert cut.shape == cut.data.shape
