@@ -2,6 +2,9 @@
 
 ## Reducers 0.4 and profile diagnostics
 
+The API now calls these records `NormStats` (`return_stats=True`, `.stats`).
+The benchmark's `--profiles` flag and JSON labels retain their historical names.
+
 September 8, 2026: Python 3.13.11, NumPy 2.4.4, reducers 0.4.0,
 macOS ARM64; median of three warm runs against commit `5d29543`.
 All compared baseline images matched exactly, including finite masks.

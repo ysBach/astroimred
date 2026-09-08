@@ -1,4 +1,4 @@
-"""Inspect the radial estimates used to enhance an image."""
+"""Store normalization statistics alongside an enhanced image."""
 
 from dataclasses import dataclass
 from typing import Literal
@@ -8,8 +8,10 @@ import numpy.typing as npt
 
 
 @dataclass(frozen=True)
-class RadialProfile:
-    """Read the estimates, sample counts, and coverage of each radial bin.
+class NormStats:
+    """Normalization statistics and sample support for each radial bin.
+
+    Records values from the enhancement pass; performs no estimation.
 
     Attributes
     ----------
@@ -47,9 +49,9 @@ class RadialProfile:
     `n_samples` counts opportunities before masking. `n_rejected` counts
     sigma rejections only.
 
-    This is a record of the normalization pass, not another estimator.
-    Use `astroimred.phot.radprof.radial_profile` for standalone annular
-    photometry with `sky_fit` options.
+    Use `astroimred.phot.radprof.radial_profile` to calculate a standalone
+    annular profile with `sky_fit` options. Matching statistics require
+    matching sample selection, clipping, and degrees of freedom.
     """
 
     radius: npt.NDArray[np.float64]
@@ -86,29 +88,29 @@ class RadialProfile:
 
 @dataclass(frozen=True)
 class EnhancementResult:
-    """Access an enhanced image and the radial estimates that produced it.
+    """Access an enhanced image and its normalization statistics.
 
     Attributes
     ----------
     image : ndarray
-        Float64 enhanced image, as returned without profile diagnostics.
-    profile : RadialProfile
+        Float64 enhanced image, as returned with ``return_stats=False``.
+    stats : NormStats
         Radial estimates, spreads, and sample counts. These are visualization
         diagnostics, not propagated measurement uncertainties.
     """
 
     image: npt.NDArray[np.float64]
-    profile: RadialProfile
+    stats: NormStats
 
 
-def _validate_profile_options(
+def _validate_result_options(
     statistic_mask: npt.ArrayLike | None,
     shape: tuple[int, int],
-    return_profile: bool,
+    return_stats: bool,
 ) -> npt.NDArray[np.bool_] | None:
     """Validate opt-in diagnostics and an estimation-only exclusion mask."""
-    if not isinstance(return_profile, (bool, np.bool_)):
-        raise ValueError("return_profile must be a bool")
+    if not isinstance(return_stats, (bool, np.bool_)):
+        raise ValueError("return_stats must be a bool")
     if statistic_mask is None:
         return None
     mask = np.asarray(statistic_mask)

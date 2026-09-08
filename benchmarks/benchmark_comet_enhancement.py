@@ -51,6 +51,7 @@ def load_baseline(ref: str) -> dict[str, Callable]:
             for name in (
                 "_enhance_common",
                 "_enhance_profile",
+                "_enhance_result",
                 "_enhance_stats",
                 "enhance",
                 "rvsf",
@@ -234,7 +235,7 @@ def main() -> None:
                         **options,
                         statistic_mask=statistic_mask if masked else None,
                     )
-                    with_profile = partial(call, return_profile=True)
+                    with_profile = partial(call, return_stats=True)
                     expected, profile = call(), with_profile()
                     np.testing.assert_allclose(
                         profile.image, expected, rtol=1e-10, atol=1e-10

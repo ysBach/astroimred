@@ -171,7 +171,7 @@ def test_radial_profile_mmm_matches_sky_fit_for_the_same_annulus():
         to_table=False,
     )[0]
 
-    profile, center_value = radial_profile(
+    radial_stats, center_value = radial_profile(
         image,
         center,
         radii=[3.0],
@@ -180,7 +180,7 @@ def test_radial_profile_mmm_matches_sky_fit_for_the_same_annulus():
         sky_clipper=None,
     )
 
-    row = profile.iloc[0]
+    row = radial_stats.iloc[0]
     assert center_value == image[4, 4]
     assert row["mpix"] == pytest.approx(sky_row["msky"])
     assert row["spix"] == pytest.approx(sky_row["ssky"])
@@ -188,7 +188,7 @@ def test_radial_profile_mmm_matches_sky_fit_for_the_same_annulus():
     assert row["spix_n"] == pytest.approx(sky_row["ssky"] / np.sqrt(sky_row["nsky"]))
 
 
-def test_annular_mode_profile_uses_the_same_finite_samples():
+def test_annular_mode_stats_use_the_same_finite_samples():
     """Direct annular mode diagnostics report the finite source samples."""
     image = np.array([[1.0, 2.0, 4.0, 8.0, np.nan]])
     original = image.copy()
@@ -200,21 +200,21 @@ def test_annular_mode_profile_uses_the_same_finite_samples():
         (0.0, 0.0),
         radii=[0.0, 4.5],
         statistic="mode",
-        return_profile=True,
+        return_stats=True,
     )
 
-    profile = result.profile
-    assert profile.statistic[0] == pytest.approx(expected)
-    assert profile.n_samples[0] == 5
-    assert profile.n_valid[0] == finite.size
-    assert profile.n_used[0] == finite.size
-    assert profile.std[0] == pytest.approx(np.std(finite, ddof=1))
+    stats = result.stats
+    assert stats.statistic[0] == pytest.approx(expected)
+    assert stats.n_samples[0] == 5
+    assert stats.n_valid[0] == finite.size
+    assert stats.n_used[0] == finite.size
+    assert stats.std[0] == pytest.approx(np.std(finite, ddof=1))
     assert_allclose(result.image[0, :4], finite / expected)
     assert np.isnan(result.image[0, 4])
     assert_array_equal(image, original)
 
 
-def test_singleton_sky_and_visual_profile_keep_their_spread_conventions():
+def test_singleton_sky_and_visual_stats_keep_their_spread_conventions():
     """Photometric sky keeps NaN ddof-one spread while viz defines zero width."""
     sky_row = sky_fit(
         np.array([5.0]),
@@ -228,11 +228,11 @@ def test_singleton_sky_and_visual_profile_keep_their_spread_conventions():
         (0.0, 0.0),
         radii=[0.0, 1.0],
         statistic="mean",
-        return_profile=True,
+        return_stats=True,
     )
 
     assert sky_row["msky"] == pytest.approx(5.0)
     assert np.isnan(sky_row["ssky"])
-    assert viz.profile.statistic[0] == pytest.approx(5.0)
-    assert viz.profile.std[0] == pytest.approx(0.0)
-    assert viz.profile.n_valid[0] == 1
+    assert viz.stats.statistic[0] == pytest.approx(5.0)
+    assert viz.stats.std[0] == pytest.approx(0.0)
+    assert viz.stats.n_valid[0] == 1

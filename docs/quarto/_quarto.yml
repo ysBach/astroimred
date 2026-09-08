@@ -157,7 +157,7 @@ quartodoc:
         - viz.enhance.azimuthal_normalize
         - viz.enhance.azimuthal_renormalize
         - viz.enhance.annular_normalize
-        - viz.enhance.RadialProfile
+        - viz.enhance.NormStats
         - viz.enhance.EnhancementResult
         - viz.rvsf.radially_variable_filter
     - title: Coordinates and observing geometry

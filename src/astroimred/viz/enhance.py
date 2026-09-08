@@ -16,16 +16,16 @@ from ._enhance_common import (
     _subpixel_offsets,
     _update_mean,
 )
-from ._enhance_profile import (
+from ._enhance_result import (
     EnhancementResult,
-    RadialProfile,
-    _validate_profile_options,
+    NormStats,
+    _validate_result_options,
 )
 from ._enhance_stats import _ring_statistics, _validate_statistics
 
 __all__ = [
     "EnhancementResult",
-    "RadialProfile",
+    "NormStats",
     "enhance_rho",
     "azimuthal_normalize",
     "azimuthal_renormalize",
@@ -217,7 +217,7 @@ def azimuthal_normalize(
     subpixels: int = 10,
     mask: npt.ArrayLike | None = None,
     statistic_mask: npt.ArrayLike | None = None,
-    return_profile: bool = False,
+    return_stats: bool = False,
 ) -> npt.NDArray[np.float64] | EnhancementResult:
     """Divide polar rings by a mean, median, mode estimate, or custom statistic.
 
@@ -263,9 +263,9 @@ def azimuthal_normalize(
         Exclude these pixels from ring estimates only. Original valid samples
         remain in the output. A polar cell is excluded from estimation if
         any midpoint touches this mask. The hard `mask` still excludes output.
-    return_profile : bool, optional
-        Return an `EnhancementResult` with `.image` and `.profile` when `True`.
-        The profile includes levels, sample standard deviations, and counts.
+    return_stats : bool, optional
+        Return an `EnhancementResult` with `.image` and `.stats` when `True`.
+        The statistics include levels, sample standard deviations, and counts.
         The default `False` returns only the image and avoids diagnostic work.
 
     Returns
@@ -297,13 +297,11 @@ def azimuthal_normalize(
     subpixels = _positive_integer(subpixels, "subpixels")
     options = _validate_statistics(statistic, sigma, maxiters, clip_center, clip_scale)
     data, center_value = _prepare_image(image, center, mask)
-    statistic_mask = _validate_profile_options(
-        statistic_mask, data.shape, return_profile
-    )
+    statistic_mask = _validate_result_options(statistic_mask, data.shape, return_stats)
     polar, estimates = _polar_sample(
         data, center_value, nrad, ntheta, subpixels, statistic_mask
     )
-    if return_profile:
+    if return_stats:
         scales, std, n_valid, n_used = _ring_statistics(
             estimates, *options, return_std=True, return_counts=True
         )
@@ -319,10 +317,10 @@ def azimuthal_normalize(
         )
     result = _polar_reconstruct(normalized, center_value, data.shape, subpixels)
     result[np.isnan(data)] = np.nan
-    if return_profile:
+    if return_stats:
         return EnhancementResult(
             result,
-            RadialProfile(
+            NormStats(
                 radius=np.arange(1, nrad + 1, dtype=np.float64),
                 statistic=scales,
                 std=std,
@@ -351,7 +349,7 @@ def azimuthal_renormalize(
     subpixels: int = 10,
     mask: npt.ArrayLike | None = None,
     statistic_mask: npt.ArrayLike | None = None,
-    return_profile: bool = False,
+    return_stats: bool = False,
 ) -> npt.NDArray[np.float64] | EnhancementResult:
     """Map each ring's location plus/minus sample deviations to zero and one.
 
@@ -386,10 +384,10 @@ def azimuthal_renormalize(
     statistic_mask : array-like or None, optional
         Exclude pixels from estimation only, preserving valid output samples.
         A polar cell is excluded if any midpoint touches this mask.
-    return_profile : bool, optional
-        Return an `EnhancementResult` with `.image` and `.profile` when `True`.
+    return_stats : bool, optional
+        Return an `EnhancementResult` with `.image` and `.stats` when `True`.
         Default `False` returns an image. Counts refer to polar cells, not
-        independent source pixels; see `RadialProfile`.
+        independent source pixels; see `NormStats`.
 
     Returns
     -------
@@ -413,13 +411,11 @@ def azimuthal_renormalize(
     nsigma = _finite_positive(nsigma, "nsigma")
     options = _validate_statistics(statistic, sigma, maxiters, clip_center, clip_scale)
     data, center_value = _prepare_image(image, center, mask)
-    statistic_mask = _validate_profile_options(
-        statistic_mask, data.shape, return_profile
-    )
+    statistic_mask = _validate_result_options(statistic_mask, data.shape, return_stats)
     polar, estimates = _polar_sample(
         data, center_value, nrad, ntheta, subpixels, statistic_mask
     )
-    if return_profile:
+    if return_stats:
         location, std, n_valid, n_used = _ring_statistics(
             estimates, *options, return_std=True, return_counts=True
         )
@@ -434,10 +430,10 @@ def azimuthal_renormalize(
         ] / nsigma + 0.5
     result = _polar_reconstruct(normalized, center_value, data.shape, subpixels)
     result[np.isnan(data)] = np.nan
-    if return_profile:
+    if return_stats:
         return EnhancementResult(
             result,
-            RadialProfile(
+            NormStats(
                 radius=np.arange(1, nrad + 1, dtype=np.float64),
                 statistic=location,
                 std=std,
@@ -463,7 +459,7 @@ def annular_normalize(
     clip_scale: Literal["std", "mad_std"] = "std",
     mask: npt.ArrayLike | None = None,
     statistic_mask: npt.ArrayLike | None = None,
-    return_profile: bool = False,
+    return_stats: bool = False,
 ) -> npt.NDArray[np.float64] | EnhancementResult:
     """Divide original pixels by statistics in explicit radial intervals.
 
@@ -496,8 +492,8 @@ def annular_normalize(
         Exclude these pixels from each bin's estimate, while dividing their
         original valid values by that estimate. The hard `mask` still
         excludes pixels from both estimation and output.
-    return_profile : bool, optional
-        Return an `EnhancementResult` with `.image` and `.profile` when `True`.
+    return_stats : bool, optional
+        Return an `EnhancementResult` with `.image` and `.stats` when `True`.
         Default `False` returns only the image. Coverage is relative to
         in-frame pixel centers, not the area of a complete annulus.
 
@@ -538,16 +534,14 @@ def annular_normalize(
     if not np.all(np.isfinite(edges)) or edges[0] < 0 or np.any(np.diff(edges) <= 0):
         raise ValueError("radii must be finite, nonnegative, and strictly increasing")
     data, (cx, cy) = _prepare_image(image, center, mask)
-    statistic_mask = _validate_profile_options(
-        statistic_mask, data.shape, return_profile
-    )
+    statistic_mask = _validate_result_options(statistic_mask, data.shape, return_stats)
     yy = np.arange(data.shape[0], dtype=np.float64)[:, None] - cy
     xx = np.arange(data.shape[1], dtype=np.float64)[None, :] - cx
     bins = np.searchsorted(edges, np.hypot(xx, yy), side="right") - 1
-    if return_profile:
+    if return_stats:
         nbins = edges.size - 1
-        profile_levels = np.full(nbins, np.nan)
-        profile_std = np.full(nbins, np.nan)
+        bin_levels = np.full(nbins, np.nan)
+        bin_std = np.full(nbins, np.nan)
         n_valid = np.zeros(nbins, dtype=np.intp)
         n_used = np.zeros(nbins, dtype=np.intp)
         n_samples = np.bincount(bins[(bins >= 0) & (bins < nbins)], minlength=nbins)
@@ -567,13 +561,13 @@ def annular_normalize(
         estimates = values
         if statistic_mask is not None:
             estimates = np.where(statistic_mask.ravel()[indices], np.nan, values)
-        if return_profile:
+        if return_stats:
             levels, std, valid, used = _ring_statistics(
                 estimates[None, :], *options, return_std=True, return_counts=True
             )
             bin_index = groups[start]
-            profile_levels[bin_index] = levels[0]
-            profile_std[bin_index] = std[0]
+            bin_levels[bin_index] = levels[0]
+            bin_std[bin_index] = std[0]
             n_valid[bin_index] = valid[0]
             n_used[bin_index] = used[0]
         else:
@@ -581,13 +575,13 @@ def annular_normalize(
         if np.isfinite(levels[0]) and levels[0] != 0:
             with np.errstate(over="ignore", invalid="ignore"):
                 result.ravel()[indices] = values / levels[0]
-    if return_profile:
+    if return_stats:
         return EnhancementResult(
             result,
-            RadialProfile(
+            NormStats(
                 radius=edges[:-1] + np.diff(edges) / 2.0,
-                statistic=profile_levels,
-                std=profile_std,
+                statistic=bin_levels,
+                std=bin_std,
                 n_samples=n_samples,
                 n_valid=n_valid,
                 n_used=n_used,

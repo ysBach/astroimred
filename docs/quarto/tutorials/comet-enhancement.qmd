@@ -137,10 +137,11 @@ plt.show()
 Each panel has its own display limits. Compare feature locations and shapes,
 not brightness between panels or between different radii of a normalized image.
 
-Use `return_profile=True` when the radial estimates and their support matter.
+Use `return_stats=True` when the radial estimates and their support matter.
 The result is an `EnhancementResult`: use `.image` for the enhanced array and
-`.profile` for a `RadialProfile`. The profile's `statistic` and `std` arrays
-are the retained-sample divisor/location and standard deviation (`ddof=1`),
+`.stats` for a `NormStats` record from the same normalization pass.
+Its `statistic` and `std` arrays are the retained-sample divisor/location
+and standard deviation (`ddof=1`),
 and `n_valid`/`n_used` report support before/after sigma clipping. `n_rejected`
 counts sigma rejections only. For polar methods, `n_samples` is `ntheta` per
 ring; for direct annuli it is the number of in-frame pixel centers, including
@@ -191,7 +192,7 @@ plt.show()
 
 For example, an estimate-only mask removes a bright pixel from the annular
 mean while leaving its transformed value visible. No plotting is needed to
-inspect the profile:
+inspect the normalization statistics:
 
 ```{python}
 toy = np.full((5, 5), 2.0)
@@ -204,17 +205,17 @@ diagnostic = air.viz.annular_normalize(
     radii=[0, 3],
     statistic="mean",
     statistic_mask=estimate_mask,
-    return_profile=True,
+    return_stats=True,
 )
 assert diagnostic.image[2, 3] == 50.0
-assert diagnostic.profile.n_samples[0] == 25
-assert diagnostic.profile.n_valid[0] == 24
-assert diagnostic.profile.n_rejected[0] == 0
+assert diagnostic.stats.n_samples[0] == 25
+assert diagnostic.stats.n_valid[0] == 24
+assert diagnostic.stats.n_rejected[0] == 0
 ```
 
-For direct annuli, `profile.radius` is the midpoint of each supplied edge
-pair and `profile.bin_edges` preserves those exact edges. Polar profiles use
-integer ring centers and have no `bin_edges`. Annular coverage is relative to
+For direct annuli, `diagnostic.stats.radius` is the midpoint of each supplied
+edge pair and `diagnostic.stats.bin_edges` preserves those exact edges.
+Polar rings use integer ring centers and have no `bin_edges`. Annular coverage is relative to
 in-frame centers, not to the area of a complete geometric annulus.
 
 ## 4. Handle masks and boundaries
