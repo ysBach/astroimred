@@ -1,0 +1,246 @@
+---
+title: Enhance comet coma structure
+description: Apply five CometCIEF-style techniques and a direct annular variant to arrays and inspect a lossless FITS example.
+---
+
+Use `air.viz.azimuthal_normalize` to reveal variations around the nucleus.
+Keep the calibrated input for flux measurements: enhancement changes
+intensities and can create apparent structure around noise, stars, and masks.
+
+## 1. Choose a technique
+
+| Goal | Function | Result |
+| --- | --- | --- |
+| Compensate a $1/\rho$ brightness profile | `enhance_rho` | Image multiplied by pixel-averaged radius |
+| Divide by the azimuthal mean | `azimuthal_normalize(statistic="mean")` | Relative brightness at each radius |
+| Reduce sensitivity to bright outliers | `azimuthal_normalize(statistic="median")` | Division by the azimuthal median |
+| Standardize azimuthal contrast | `azimuthal_renormalize` | Mean $\pm N\sigma$ mapped to 0 and 1 |
+| Highlight progressively broader structure | `radially_variable_filter` | A spatial-filter residual |
+| Normalize direct pixel-center annuli | `annular_normalize` | Radial-bin statistic divided into the original pixels |
+
+The first five rows mirror the supplied CometCIEF techniques. The annular
+function is a direct radial-bin alternative to the polar azimuthal functions.
+The first technique models a dust coma with a $1/\rho$ profile; gas comae need
+not follow that profile. Compare multiple techniques before interpreting a
+feature. Larson–Sekanina rotational filtering is deferred.
+
+## 2. Load the packaged FITS example
+
+Install `astroimred[full]` to run the plotting examples. The package includes
+the full 801 × 801 CometCIEF sample as a lossless xz archive. This example
+needs no download and does not write to the installed package.
+
+```{python}
+import lzma
+from importlib.resources import as_file, files
+
+import astroimred as air
+import matplotlib.pyplot as plt
+import numpy as np
+from astropy.io import fits
+
+resource = files("astroimred.viz").joinpath("data/CometCIEF_test.fits.xz")
+with as_file(resource) as path, lzma.open(path, "rb") as stream:
+    image, header = fits.getdata(stream, header=True, memmap=False)
+
+assert image.shape == (801, 801)
+image.shape
+```
+
+The source tutorial lists the nucleus at **`(400.5, 400.5)` in one-based
+coordinates**. AIR uses zero-based `(x, y)`, so subtract one from both
+coordinates. Array indexing remains `image[y, x]`.
+
+```{python}
+center = (399.5, 399.5)
+```
+
+The tutorial calls the sample dust continuum, but its FITS header says
+`OBJECT='HBcn'`. The passband is unresolved. The examples demonstrate the
+algorithms; they do not establish which physical coma model fits this image.
+
+## 3. Compare enhancements
+
+`nrad` chooses the polar radii, from 1 through `nrad` pixels. `ntheta` sets
+the number of equal-angle cells around each radius. Both are explicit
+resolution choices. `subpixels=10` uses the source's 10 × 10 midpoint
+sampling; increasing it improves numerical sampling at increased cost.
+
+The values below are example settings. Choose radial coverage, angular
+resolution, rejection sigma, and kernel widths for your own image.
+
+Both polar normalizers accept `statistic="mean"`, `"median"`, or
+`"mode"`, plus a callable. `azimuthal_normalize` defaults to the median;
+`azimuthal_renormalize` defaults to the mean. The mode is the MMM approximation
+`3 * median - 2 * mean`, not a histogram mode. It can be zero, negative, or
+outside the retained sample range. For normalization, a zero or nonfinite
+divisor is undefined; finite negative divisors are retained. Renormalization
+instead requires a finite positive retained sample standard deviation.
+
+For a callable, pass a function that accepts one finite 1-D array of retained
+samples and returns one real scalar. Empty rings skip the callable, and a
+nonfinite result is undefined. This gives custom estimators without adding
+statistic-name aliases.
+
+`sigma=None` disables clipping. A scalar is a symmetric threshold; a pair is
+`(lower, upper)`. Clipping uses `clip_center="mean"` or `"median"` and
+`clip_scale="std"` (sample standard deviation, `ddof=1`) or `"mad_std"`.
+These controls are independent of `statistic`. `maxiters=1` is the default
+single pass; use `maxiters=None` to continue until no samples are rejected.
+Clipping changes the estimates, not the source samples that are transformed.
+For renormalization, `clip_scale` controls rejection only; the output always
+uses the retained sample standard deviation.
+
+For example, a clipped MMM estimate with robust asymmetric rejection is
+selected by `statistic="mode", sigma=(2, 3), maxiters=5,
+clip_center="median", clip_scale="mad_std"`. On a four-sample ring,
+`sigma=3` with sample `std` can leave a bright outlier because that outlier
+inflates the same spread used for rejection. These settings define an
+estimator; they do not establish a physical coma model.
+
+```{python}
+# Crop only for a compact tutorial; the packaged FITS remains complete.
+cut = image[250:550, 250:550]
+cut_center = (center[0] - 250, center[1] - 250)
+polar = dict(nrad=140, ntheta=360, subpixels=10)
+
+enhanced = {
+    "Input": cut,
+    "Multiply by radius": air.viz.enhance_rho(cut, cut_center),
+    "Azimuthal mean": air.viz.azimuthal_normalize(
+        cut, cut_center, statistic="mean", sigma=3, **polar
+    ),
+    "Azimuthal median": air.viz.azimuthal_normalize(
+        cut, cut_center, statistic="median", **polar
+    ),
+    "Azimuthal renormalization": air.viz.azimuthal_renormalize(
+        cut, cut_center, nsigma=3, sigma=3, **polar
+    ),
+    "Variable spatial filter": air.viz.radially_variable_filter(
+        cut, cut_center, a=1, b=1, n=0.3
+    ),
+}
+
+fig, axes = plt.subplots(2, 3, figsize=(10, 7), layout="constrained")
+for ax, (title, result) in zip(axes.flat, enhanced.items(), strict=True):
+    finite = result[np.isfinite(result)]
+    assert finite.size > 0
+    # Percentiles affect display only; the enhancement arrays are unchanged.
+    vmin, vmax = np.percentile(finite, [1, 99])
+    ax.imshow(result, origin="lower", cmap="gray", vmin=vmin, vmax=vmax)
+    ax.set_title(title)
+    ax.set_xticks([])
+    ax.set_yticks([])
+plt.show()
+```
+
+Each panel has its own display limits. Compare feature locations and shapes,
+not brightness between panels or between different radii of a normalized image.
+
+### Direct annular normalization
+
+Use `annular_normalize` when each original pixel should be divided by the
+statistic for the radial interval containing its pixel center. It accepts the
+same statistic and clipping options, but has no `ntheta`, `subpixels`, polar
+resampling, or reconstruction. Each interval is lower-inclusive and
+upper-exclusive: `radii=[0, 2, 5, 10]` means `[0, 2)`, `[2, 5)`, and `[5, 10)`
+pixels. There is no fractional area weighting. Pixels outside the supplied
+intervals remain `NaN`.
+
+The example uses a compact source cut so those four edges cover most of the
+displayed image. The radius map and grouping are computed once per call; cache
+the returned result when changing only display settings. This tutorial makes
+no timing claim.
+
+```{python}
+annular_cut = image[390:410, 390:410]
+annular_center = (center[0] - 390, center[1] - 390)
+annular = air.viz.annular_normalize(
+    annular_cut,
+    annular_center,
+    radii=[0, 2, 5, 10],
+    statistic="median",
+)
+
+finite = annular[np.isfinite(annular)]
+vmin, vmax = np.percentile(finite, [1, 99])
+fig, ax = plt.subplots(figsize=(4, 4), layout="constrained")
+ax.imshow(annular, origin="lower", cmap="gray", vmin=vmin, vmax=vmax)
+ax.set_title("Direct annular normalization")
+ax.set_xticks([])
+ax.set_yticks([])
+plt.show()
+```
+
+## 4. Handle masks and boundaries
+
+Pass `mask=True` at pixels you want excluded. Masked arrays are also
+supported. Nonfinite inputs are excluded automatically. For a `CCDData`
+image, pass `ccd.data` and `mask=ccd.mask` explicitly.
+
+```{python}
+mask = np.zeros(cut.shape, dtype=bool)
+mask[30:35, 40:45] = True
+masked = air.viz.azimuthal_normalize(
+    cut, cut_center, mask=mask, statistic="median", **polar
+)
+assert np.isnan(masked[mask]).all()
+```
+
+Polar cells and reconstructed pixels become `NaN` if any required sample
+is missing. Radius below 0.5 pixels has no polar ring, so the central region
+is undefined for the azimuthal methods. Incomplete outer coverage is also
+`NaN`. A contaminated or incomplete ring uses its remaining valid polar
+cells for the statistic; that partial azimuth coverage can bias the result.
+
+`annular_normalize` uses the supplied pixel-center intervals directly. Pixels
+outside the last edge are `NaN`; annular bounds are lower-inclusive and
+upper-exclusive, with no subpixel area weighting.
+
+For normalization, zero or nonfinite statistics, including a mode or callable
+result, yield `NaN`; finite negative divisors are retained. Renormalization
+requires finite location and positive retained sample variance. No small
+denominator is added, and no implicit background subtraction is performed.
+
+For spatial filtering, every neighbor must be available. A mask therefore
+also invalidates nearby outputs whose stencil touches it. `log=True`
+requires every unmasked finite pixel to be strictly positive; it raises
+`ValueError` instead of silently disabling the logarithm.
+
+## Differences from the original programs
+
+These are array implementations of the supplied techniques, with explicit
+undefined-data behavior. They are not bit-for-bit replicas of the Fortran
+programs.
+
+1. Centers are zero-based, outputs are float64, and no whole-image mean is
+   forced to 100. The original input is never modified.
+2. Polar sampling retains equal-angle cells, nearest-pixel lookup, and
+   configurable subpixel averaging. Negative values remain valid; no
+   sentinel intensities or denominator floors are used.
+3. Both polar normalizers support mean, median, the MMM mode approximation,
+   and callables. `sigma` applies to every statistic; the default is one
+   pass (`maxiters=1`), while `maxiters=None` iterates to convergence.
+   `clip_center` and `clip_scale` control rejection independently of the
+   selected statistic.
+4. Renormalization defaults to the mean location but accepts the same
+   statistics. It maps with $0.5 + (I - L)/(2 N s)$, where $L$ is the selected
+   location, $N$ is `nsigma`, and $s$ is the retained sample standard deviation
+   (`ddof=1`); `clip_scale` affects
+   rejection only. Values outside 0–1 are preserved.
+5. The variable filter retains all eight neighbors when the width rounds
+   to zero, so a flat field still gives zero. Unavailable neighbors become
+   `NaN` instead of producing bright borders.
+
+## Sources and sample integrity
+
+The techniques originate from [CometCIEF](https://cie.psi.edu/techniques.html)
+and the comparative study by
+[Samarasinha and Larson (2014)](https://arxiv.org/abs/1406.0033).
+Credit the facility as Samarasinha, N. H., Martin, M. P., and Larson, S. M.
+(2013), *Cometary Coma Image Enhancement Facility*.
+
+The archived FITS occupies 1,511,444 bytes instead of 2,574,720 bytes.
+Every original FITS byte, including its header, is recoverable. The bundled
+`astroimred/viz/data/README.md` records the compression comparison, SHA-256,
+source attribution, and unresolved passband and data-license metadata.

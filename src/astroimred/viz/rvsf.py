@@ -3,9 +3,86 @@
 import numpy as np
 import numpy.typing as npt
 
-from .enhance import _prepare_image, _subpixel_offsets
+from ._enhance_common import (
+    _finite_nonnegative,
+    _finite_positive,
+    _positive_integer,
+    _prepare_image,
+    _subpixel_offsets,
+)
 
 __all__ = ["radially_variable_filter"]
+
+
+_NEIGHBORS = (
+    (0, -1, 192),
+    (0, 1, 192),
+    (-1, 0, 192),
+    (1, 0, 192),
+    (-1, -1, 64),
+    (-1, 1, 64),
+    (1, -1, 64),
+    (1, 1, 64),
+)
+
+
+def _accumulate_step(
+    data: npt.NDArray[np.float64],
+    steps: npt.NDArray[np.intp],
+    usable: npt.NDArray[np.bool_],
+    result: npt.NDArray[np.float64],
+    invalid: npt.NDArray[np.bool_],
+    max_step: npt.NDArray[np.intp],
+    previous_steps: npt.NDArray[np.intp],
+    previous_stencil: npt.NDArray[np.float64],
+    *,
+    width: int,
+    scale: float,
+) -> None:
+    """Accumulate one subpixel's stencil, reusing unchanged rounded widths.
+
+    The stencil depends on a pixel's integer width only. Cache the previous
+    stencil for each pixel so midpoint samples with the same rounded width
+    avoid repeating the eight neighbor gathers.
+    """
+    data_flat = data.ravel()
+    steps_flat = steps.ravel()
+    usable_flat = usable.ravel()
+    result_flat = result.ravel()
+    invalid_flat = invalid.ravel()
+    max_step_flat = max_step.ravel()
+
+    valid = usable_flat & (steps_flat <= max_step_flat) & np.isfinite(data_flat)
+    invalid_flat[~valid] = True
+    active = valid & ~invalid_flat
+    changed = active & (steps_flat != previous_steps)
+    changed_pixels = np.flatnonzero(changed)
+    if changed_pixels.size:
+        step_values = steps_flat[changed_pixels]
+        center_values = data_flat[changed_pixels]
+        filtered = np.zeros(changed_pixels.size, dtype=np.float64)
+        stencil_valid = np.ones(changed_pixels.size, dtype=bool)
+        for sy, sx, weight in _NEIGHBORS:
+            neighbor = changed_pixels + step_values * (sy * width + sx)
+            neighbor_values = data_flat[neighbor]
+            finite = np.isfinite(neighbor_values)
+            stencil_valid &= finite
+            filtered += weight * np.where(
+                finite,
+                center_values - neighbor_values,
+                0.0,
+            )
+
+        invalid_pixels = changed_pixels[~stencil_valid]
+        invalid_flat[invalid_pixels] = True
+        valid_pixels = changed_pixels[stencil_valid]
+        previous_steps[valid_pixels] = steps_flat[valid_pixels]
+        previous_stencil[valid_pixels] = filtered[stencil_valid]
+        active[invalid_pixels] = False
+
+    if not np.any(active):
+        return
+    result_flat[active] += previous_stencil[active] / scale
 
 
 def radially_variable_filter(
@@ -88,17 +165,10 @@ def radially_variable_filter(
     True
     """
     data, (cx, cy) = _prepare_image(image, center, mask)
-    offsets = _subpixel_offsets(subpixels)
-    for name, value in (("a", a), ("b", b), ("n", n)):
-        if np.ndim(value) != 0 or not np.isrealobj(value):
-            raise ValueError(f"{name} must be a finite real scalar")
-        try:
-            valid = np.isfinite(value) and (value > 0 if name == "n" else value >= 0)
-        except TypeError as exc:
-            raise ValueError(f"{name} must be a finite real scalar") from exc
-        if not valid:
-            comparison = "positive" if name == "n" else "nonnegative"
-            raise ValueError(f"{name} must be finite and {comparison}")
+    a = _finite_nonnegative(a, "a")
+    b = _finite_nonnegative(b, "b")
+    n = _finite_positive(n, "n")
+    subpixels = _positive_integer(subpixels, "subpixels")
     if not isinstance(log, (bool, np.bool_)):
         raise ValueError("log must be a bool")
     if log:
@@ -108,33 +178,62 @@ def radially_variable_filter(
         data[valid_pixels] = np.log10(data[valid_pixels])
 
     height, width = data.shape
-    yy, xx = np.indices(data.shape)
+    minimum_axis = min(height, width)
     result = np.zeros(data.shape, dtype=np.float64)
-    neighbors = (
-        (0, -1, 192),
-        (0, 1, 192),
-        (-1, 0, 192),
-        (1, 0, 192),
-        (-1, -1, 64),
-        (-1, 1, 64),
-        (1, -1, 64),
-        (1, 1, 64),
-    )
-    for dy in offsets:
-        for dx in offsets:
-            rho = np.hypot(xx - cx + dx, yy - cy + dy)
-            with np.errstate(over="ignore", invalid="ignore"):
-                half_width = a + b * rho**n if b != 0 else np.full(data.shape, a)
-            # A step as large as an image axis cannot have a valid stencil.
-            # Bound it before converting to integers.
-            usable = np.isfinite(half_width) & (half_width < min(height, width))
-            step = np.floor(np.where(usable, half_width, 0) + 0.5).astype(np.intp)
-            filtered = np.zeros(data.shape, dtype=np.float64)
-            for sy, sx, weight in neighbors:
-                py, px = yy + sy * step, xx + sx * step
-                inside = usable & (py >= 0) & (py < height) & (px >= 0) & (px < width)
-                sampled = data[np.clip(py, 0, height - 1), np.clip(px, 0, width - 1)]
-                # This difference form cancels a constant field before scaling.
-                filtered += weight * (data - np.where(inside, sampled, np.nan))
-            result += filtered / (subpixels * subpixels)
+    invalid = np.zeros(data.shape, dtype=bool)
+    row_indices = np.arange(height, dtype=np.intp)
+    column_indices = np.arange(width, dtype=np.intp)
+    row_max_step = np.minimum(row_indices, height - 1 - row_indices)[:, None]
+    column_max_step = np.minimum(column_indices, width - 1 - column_indices)[None, :]
+    max_step = np.minimum(row_max_step, column_max_step)
+    previous_steps = np.full(data.size, -1, dtype=np.intp)
+    previous_stencil = np.zeros(data.size, dtype=np.float64)
+
+    if b == 0.0:
+        # The width and stencil are identical at every midpoint when b is zero.
+        # One evaluation is therefore exactly the subpixel average.
+        usable = np.full(data.shape, a < minimum_axis, dtype=bool)
+        step = np.zeros(data.shape, dtype=np.intp)
+        if a < minimum_axis:
+            step.fill(int(np.floor(a + 0.5)))
+        _accumulate_step(
+            data,
+            step,
+            usable,
+            result,
+            invalid,
+            max_step,
+            previous_steps,
+            previous_stencil,
+            width=width,
+            scale=1.0,
+        )
+    else:
+        offsets = _subpixel_offsets(subpixels)
+        x_distances = np.arange(width, dtype=np.float64)[None, :] - cx
+        y_distances = np.arange(height, dtype=np.float64)[:, None] - cy
+        sample_count = float(subpixels * subpixels)
+        for dy in offsets:
+            for dx in offsets:
+                rho = np.hypot(x_distances + dx, y_distances + dy)
+                with np.errstate(over="ignore", invalid="ignore"):
+                    half_width = a + b * rho**n
+                # A step as large as an image axis cannot have a valid stencil.
+                # Bound it before converting to integers.
+                usable = np.isfinite(half_width) & (half_width < minimum_axis)
+                step = np.zeros(data.shape, dtype=np.intp)
+                step[usable] = np.floor(half_width[usable] + 0.5).astype(np.intp)
+                _accumulate_step(
+                    data,
+                    step,
+                    usable,
+                    result,
+                    invalid,
+                    max_step,
+                    previous_steps,
+                    previous_stencil,
+                    width=width,
+                    scale=sample_count,
+                )
+    result[invalid] = np.nan
     return result

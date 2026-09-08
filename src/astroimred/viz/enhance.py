@@ -2,150 +2,27 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import Literal
 
 import numpy as np
 import numpy.typing as npt
 
-__all__ = ["enhance_rho", "azimuthal_normalize", "azimuthal_renormalize"]
+from ._enhance_common import (
+    _finite_positive,
+    _positive_integer,
+    _prepare_image,
+    _subpixel_offsets,
+    _update_mean,
+)
+from ._enhance_stats import _ring_statistics, _validate_statistics
 
-
-def _prepare_image(
-    image: npt.ArrayLike,
-    center: tuple[float, float],
-    mask: npt.ArrayLike | None = None,
-) -> tuple[npt.NDArray[np.float64], tuple[float, float]]:
-    """Prepare an image and validate its zero-based ``(x, y)`` center.
-
-    Parameters
-    ----------
-    image : array-like
-        A nonempty, real, two-dimensional numeric image. Masked-array masks
-        and nonfinite values are converted to `NaN`.
-    center : tuple of float
-        Zero-based ``(x, y)`` coordinates of the image center. Both
-        coordinates must lie within the pixel-center extent of the image.
-    mask : array-like, optional
-        An additional exclusion mask with the same shape as `image`. Values
-        are converted to `bool`.
-
-    Returns
-    -------
-    data : ndarray
-        A private float64 copy of `image`, with excluded pixels set to `NaN`.
-    center : tuple of float
-        The validated zero-based ``(x, y)`` center.
-
-    Raises
-    ------
-    TypeError
-        If `image` or `center` is not real numeric data.
-    ValueError
-        If the image, mask, or center has an invalid shape or value.
-    """
-    masked_image = np.ma.asarray(image)
-    raw_image = np.ma.getdata(masked_image)
-    if raw_image.ndim != 2 or 0 in raw_image.shape:
-        raise ValueError("image must be a nonempty 2-D array")
-    if not np.issubdtype(raw_image.dtype, np.number) or np.iscomplexobj(raw_image):
-        raise TypeError("image must be real numeric data")
-
-    data = np.array(raw_image, dtype=np.float64, copy=True)
-    excluded = np.ma.getmaskarray(masked_image).copy()
-    if mask is not None:
-        external_mask = np.asarray(mask)
-        if external_mask.shape != data.shape:
-            raise ValueError(
-                "mask must have the same shape as image; "
-                f"got {external_mask.shape} and {data.shape}"
-            )
-        try:
-            excluded |= np.asarray(external_mask, dtype=bool)
-        except (TypeError, ValueError) as exc:
-            raise TypeError("mask must be convertible to a boolean array") from exc
-    data[excluded | ~np.isfinite(data)] = np.nan
-
-    raw_center = np.asarray(center)
-    if raw_center.shape != (2,):
-        raise ValueError("center must contain exactly two coordinates in (x, y) order")
-    if raw_center.dtype.kind not in "iuf" or np.iscomplexobj(raw_center):
-        raise TypeError("center must contain two real numeric coordinates")
-    center_values = np.asarray(raw_center, dtype=np.float64)
-    if not np.all(np.isfinite(center_values)):
-        raise ValueError("center coordinates must be finite")
-    cx, cy = (float(value) for value in center_values)
-    height, width = data.shape
-    if not (0.0 <= cx <= width - 1 and 0.0 <= cy <= height - 1):
-        raise ValueError(
-            "center coordinates must lie within the image pixel-center extent "
-            f"[0, {width - 1}] x [0, {height - 1}]"
-        )
-
-    return data, (cx, cy)
-
-
-def _subpixel_offsets(subpixels: int) -> npt.NDArray[np.float64]:
-    """Return midpoint offsets for one pixel axis.
-
-    Parameters
-    ----------
-    subpixels : int
-        Positive number of equally spaced midpoint samples per pixel axis.
-
-    Returns
-    -------
-    ndarray
-        Offsets from the pixel center, from ``-0.5`` to ``0.5``.
-
-    Raises
-    ------
-    ValueError
-        If `subpixels` is not a positive integer.
-    """
-    if isinstance(subpixels, (bool, np.bool_)) or not isinstance(
-        subpixels, (int, np.integer)
-    ):
-        raise ValueError("subpixels must be a positive integer")
-    subpixels = int(subpixels)
-    if subpixels < 1:
-        raise ValueError("subpixels must be a positive integer")
-    return (np.arange(subpixels, dtype=np.float64) + 0.5) / subpixels - 0.5
-
-
-def _positive_integer(value: int, name: str) -> int:
-    """Validate and normalize a positive integer parameter."""
-    if isinstance(value, (bool, np.bool_)) or not isinstance(value, (int, np.integer)):
-        raise ValueError(f"{name} must be a positive integer")
-    value = int(value)
-    if value < 1:
-        raise ValueError(f"{name} must be a positive integer")
-    return value
-
-
-def _finite_nonnegative(value: float, name: str) -> float:
-    """Validate a finite nonnegative scalar."""
-    if isinstance(value, (bool, np.bool_)) or np.ndim(value) != 0:
-        raise ValueError(f"{name} must be a finite nonnegative scalar")
-    try:
-        value_float = float(value)
-    except (TypeError, ValueError) as exc:
-        raise ValueError(f"{name} must be a finite nonnegative scalar") from exc
-    if not np.isfinite(value_float) or value_float < 0.0:
-        raise ValueError(f"{name} must be a finite nonnegative scalar")
-    return value_float
-
-
-def _finite_positive(value: float, name: str) -> float:
-    """Validate a finite positive scalar."""
-    if isinstance(value, (bool, np.bool_)) or np.ndim(value) != 0:
-        raise ValueError(f"{name} must be a finite positive scalar")
-    try:
-        value_float = float(value)
-    except (TypeError, ValueError) as exc:
-        raise ValueError(f"{name} must be a finite positive scalar") from exc
-    if not np.isfinite(value_float) or value_float <= 0.0:
-        raise ValueError(f"{name} must be a finite positive scalar")
-    return value_float
+__all__ = [
+    "enhance_rho",
+    "azimuthal_normalize",
+    "azimuthal_renormalize",
+    "annular_normalize",
+]
 
 
 def _nearest_integer(values: npt.NDArray[np.float64]) -> npt.NDArray[np.intp]:
@@ -176,12 +53,14 @@ def _polar_sample(
     total = np.zeros((nrad, ntheta), dtype=np.float64)
     valid = np.ones((nrad, ntheta), dtype=bool)
 
+    angles = [2.0 * np.pi * (theta_index + 0.5 + offset) / ntheta for offset in offsets]
+    directions = [(np.sin(theta)[None, :], np.cos(theta)[None, :]) for theta in angles]
+    sample_count = 0
     for radial_offset in offsets:
         radius = radii + radial_offset
-        for angular_offset in offsets:
-            theta = 2.0 * np.pi * (theta_index + 0.5 + angular_offset) / ntheta
-            x = cx - radius[:, None] * np.sin(theta)[None, :]
-            y = cy + radius[:, None] * np.cos(theta)[None, :]
+        for sin_theta, cos_theta in directions:
+            x = cx - radius[:, None] * sin_theta
+            y = cy + radius[:, None] * cos_theta
             x_pixel = _nearest_integer(x)
             y_pixel = _nearest_integer(y)
             inside = (
@@ -192,10 +71,11 @@ def _polar_sample(
             sampled = data[safe_y, safe_x]
             sample_valid = inside & np.isfinite(sampled)
             valid &= sample_valid
-            total += np.where(sample_valid, sampled, 0.0)
+            sample_count += 1
+            _update_mean(total, np.where(sample_valid, sampled, 0.0), sample_count)
 
     polar = np.full((nrad, ntheta), np.nan, dtype=np.float64)
-    polar[valid] = total[valid] / float(subpixels * subpixels)
+    polar[valid] = total[valid]
     return polar
 
 
@@ -205,88 +85,48 @@ def _polar_reconstruct(
     shape: tuple[int, int],
     subpixels: int,
 ) -> npt.NDArray[np.float64]:
-    """Reconstruct a Cartesian image from a sampled polar image."""
+    """Reconstruct only pixels whose midpoint radii all lie in the polar grid."""
     offsets = _subpixel_offsets(subpixels)
-    height, width = shape
     nrad, ntheta = polar.shape
     cx, cy = center
-    yy, xx = np.indices(shape, dtype=np.float64)
-    total = np.zeros(shape, dtype=np.float64)
-    valid = np.ones(shape, dtype=bool)
+    x_distances = np.arange(shape[1])[None, :] + offsets[:, None] - cx
+    y_distances = np.arange(shape[0])[None, :] + offsets[:, None] - cy
+    # The Cartesian product of midpoint coordinates has separable extrema.
+    nearest = np.hypot(
+        np.min(np.abs(x_distances), axis=0)[None, :],
+        np.min(np.abs(y_distances), axis=0)[:, None],
+    )
+    farthest = np.hypot(
+        np.max(np.abs(x_distances), axis=0)[None, :],
+        np.max(np.abs(y_distances), axis=0)[:, None],
+    )
+    yy, xx = np.nonzero(
+        (nearest > 0.0)
+        & (_nearest_integer(nearest) >= 1)
+        & (_nearest_integer(farthest) <= nrad)
+    )
+    total = np.zeros(yy.size)
+    valid = np.ones(yy.size, dtype=bool)
     twopi = 2.0 * np.pi
-
-    for y_offset in offsets:
-        for x_offset in offsets:
-            x_distance = xx + x_offset - cx
-            y_distance = yy + y_offset - cy
-            radius = np.hypot(x_distance, y_distance)
-            radius_index = _nearest_integer(radius)
-            angle = np.mod(np.arctan2(-x_distance, y_distance), twopi)
-            theta_index = np.floor(angle * ntheta / twopi).astype(np.intp)
-            theta_index %= ntheta
-            inside = (radius > 0.0) & (radius_index >= 1) & (radius_index <= nrad)
-            safe_radius = np.clip(radius_index - 1, 0, nrad - 1)
-            sampled = polar[safe_radius, theta_index]
+    sample_count = 0
+    for y_distance in y_distances:
+        dy = y_distance[yy]
+        for x_distance in x_distances:
+            dx = x_distance[xx]
+            radius_index = _nearest_integer(np.hypot(dx, dy))
+            angle = np.mod(np.arctan2(-dx, dy), twopi)
+            theta_index = np.floor(angle * ntheta / twopi).astype(np.intp) % ntheta
+            # Check rounded indices too: floating addition at the outer edge
+            # can round a radius just below nrad + 0.5 into the next ring.
+            inside = (radius_index >= 1) & (radius_index <= nrad)
+            sampled = polar[np.clip(radius_index - 1, 0, nrad - 1), theta_index]
             sample_valid = inside & np.isfinite(sampled)
             valid &= sample_valid
-            total += np.where(sample_valid, sampled, 0.0)
-
-    result = np.full(shape, np.nan, dtype=np.float64)
-    result[valid] = total[valid] / float(subpixels * subpixels)
+            sample_count += 1
+            _update_mean(total, np.where(sample_valid, sampled, 0.0), sample_count)
+    result = np.full(shape, np.nan)
+    result[yy[valid], xx[valid]] = total[valid]
     return result
-
-
-def _mean_and_std(values: npt.NDArray[np.float64]) -> tuple[float, float]:
-    """Return a mean and sample standard deviation for finite `values`."""
-    if values.size == 0:
-        return np.nan, np.nan
-    reference = values[0]
-    centered = values - reference
-    mean = float(reference + np.mean(centered))
-    if values.size < 2:
-        return mean, 0.0
-    return mean, float(np.std(centered, ddof=1))
-
-
-def _rejected_mean(
-    values: npt.NDArray[np.float64], sigma: float | None
-) -> tuple[float, float]:
-    """Return one-pass sigma-rejected mean and sample standard deviation."""
-    mean, std = _mean_and_std(values)
-    if sigma is None or not np.isfinite(mean) or not np.isfinite(std):
-        return mean, std
-    if std == 0.0:
-        return mean, std
-    lower = mean - sigma * std
-    upper = mean + sigma * std
-    retained = values[(values >= lower) & (values <= upper)]
-    if retained.size == 0:
-        return np.nan, np.nan
-    return _mean_and_std(retained)
-
-
-def _normalize_polar(
-    polar: npt.NDArray[np.float64],
-    statistic: Literal["mean", "median"],
-    sigma: float | None,
-) -> npt.NDArray[np.float64]:
-    """Normalize each polar ring by its selected angular statistic."""
-    scales = np.full(polar.shape[0], np.nan, dtype=np.float64)
-    for index, row in enumerate(polar):
-        values = row[np.isfinite(row)]
-        if values.size == 0:
-            continue
-        if statistic == "median":
-            scales[index] = float(np.median(values))
-        else:
-            scales[index] = _rejected_mean(values, sigma)[0]
-
-    normalized = np.full_like(polar, np.nan, dtype=np.float64)
-    for index, scale in enumerate(scales):
-        if np.isfinite(scale) and scale != 0.0:
-            finite = np.isfinite(polar[index])
-            normalized[index, finite] = polar[index, finite] / scale
-    return normalized
 
 
 def enhance_rho(
@@ -327,11 +167,15 @@ def enhance_rho(
     """
     data, (cx, cy) = _prepare_image(image, center, mask)
     offsets = _subpixel_offsets(subpixels)
-    yy, xx = np.indices(data.shape, dtype=np.float64)
+    subpixels = offsets.size
+    yy = np.arange(data.shape[0], dtype=np.float64)[:, None]
+    xx = np.arange(data.shape[1], dtype=np.float64)[None, :]
+    x_distances = [xx + offset - cx for offset in offsets]
+    y_distances = [yy + offset - cy for offset in offsets]
     radius_sum = np.zeros(data.shape, dtype=np.float64)
-    for y_offset in offsets:
-        for x_offset in offsets:
-            radius_sum += np.hypot(xx + x_offset - cx, yy + y_offset - cy)
+    for y_distance in y_distances:
+        for x_distance in x_distances:
+            radius_sum += np.hypot(x_distance, y_distance)
     result = data * (radius_sum / float(subpixels * subpixels))
     result[np.isnan(data)] = np.nan
     return result
@@ -343,83 +187,96 @@ def azimuthal_normalize(
     *,
     nrad: int,
     ntheta: int,
-    statistic: Literal["mean", "median"] = "median",
-    sigma: float | None = None,
+    statistic: Literal["mean", "median", "mode"]
+    | Callable[[npt.NDArray[np.float64]], float] = "median",
+    sigma: float | tuple[float, float] | None = None,
+    maxiters: int | None = 1,
+    clip_center: Literal["mean", "median"] = "mean",
+    clip_scale: Literal["std", "mad_std"] = "std",
     subpixels: int = 10,
     mask: npt.ArrayLike | None = None,
 ) -> npt.NDArray[np.float64]:
-    """Divide each radius by its azimuthal mean or median.
+    """Divide polar rings by a mean, median, mode estimate, or custom statistic.
+
+    Use `statistic="mode", sigma=3, maxiters=5` for a sigma-clipped mode
+    estimate. Clipping changes the ring divisor; bright features remain in
+    the image being normalized.
 
     Parameters
     ----------
     image : array-like
-        A nonempty, real, two-dimensional image. Nonfinite and masked pixels
-        are treated as missing.
+        Nonempty, real 2-D image. Masked and nonfinite pixels are missing.
+        Pass CCDData pixels and its mask separately.
     center : tuple of float
         Zero-based ``(x, y)`` nucleus coordinates within the image.
     nrad : int
         Number of integer radius rings, starting at radius 1 pixel.
     ntheta : int
-        Number of equal-width angular bins in each radius ring.
-    statistic : {``"mean"``, ``"median"``}, optional
-        Angular statistic used as the ring divisor. The default is
-        ``"median"``.
-    sigma : float or None, optional
-        One-pass rejection threshold in sample standard deviations for the
-        ``"mean"`` statistic. It must be `None` for ``"median"``.
+        Number of equal-angle cells per radius.
+    statistic : {"mean", "median", "mode"} or callable, optional
+        Ring divisor. `"mode"` estimates ``3*median - 2*mean``; it is an
+        empirical approximation, not a histogram mode, and may lie outside
+        the observed range. A callable receives a private finite 1-D array
+        after clipping and must return a real scalar. Empty rings skip the
+        callable. Nonfinite results make the ring undefined.
+    sigma : float, tuple of float, or None, optional
+        Nonnegative clipping threshold, or ``(lower, upper)`` thresholds.
+        `None` disables clipping. Every statistic supports clipping.
+    maxiters : int or None, optional
+        Maximum clipping passes. The default `1` preserves the original
+        one-pass mean rejection. `None` clips until no values are rejected.
+    clip_center : {"mean", "median"}, optional
+        Location used for clipping bounds, independently of `statistic`.
+    clip_scale : {"std", "mad_std"}, optional
+        Clipping spread: sample standard deviation (``ddof=1``) or
+        Gaussian-consistent median absolute deviation. A singleton has zero
+        spread. Zero-width bounds retain only samples equal to the center.
     subpixels : int, optional
-        Midpoint samples per pixel axis in both polar sampling and Cartesian
-        reconstruction. The default `10` follows the source quadrature.
-    mask : array-like, optional
-        Additional pixels to treat as missing. Values are converted to
-        `bool`.
+        Midpoints per axis for polar sampling and reconstruction. The
+        default `10` preserves the source's 10-by-10 quadrature.
+    mask : array-like or None, optional
+        Additional exclusion mask with the image shape.
 
     Returns
     -------
     ndarray
-        A float64 image with the same shape as `image`. Reconstruction samples
-        below radius `0.5` or at or above radius `nrad + 0.5` are undefined;
-        a pixel is `NaN` if any of its reconstruction subpixels is undefined.
-        The input is never modified.
-
-    Raises
-    ------
-    ValueError
-        If `nrad`, `ntheta`, or `subpixels` is invalid, `statistic` is
-        unknown, or `sigma` is supplied for the median statistic.
+        Float64 image with unchanged shape. The input is never modified.
+        Zero divisors and incomplete sampling neighborhoods produce `NaN`.
+        Negative finite divisors are retained.
 
     Notes
     -----
-    Each polar sample averages equal-angle midpoint samples over a radial
-    ring. A ring/angle sample is undefined if any midpoint lands outside the
-    image or on a missing input pixel. A zero ring divisor produces `NaN`
-    rather than using an epsilon floor.
+    Each polar cell averages equal-angle, equal-radius midpoint samples,
+    using nearest-pixel lookup. A missing midpoint invalidates that cell.
+    Ring statistics use the remaining finite cells. Reconstruction again
+    averages midpoint samples; all must have valid polar cells. Radii below
+    0.5 or at or above `nrad + 0.5` have no ring.
 
-    Polar angle `0` is along `+y` and increases counterclockwise toward `-x`.
-    Each angular cell is centered at the half-bin angle
-    ``(j + 0.5) * 2*pi / ntheta`` before its configurable midpoint samples
-    are applied.
+    Polar angle zero lies along `+y` and increases toward `-x`. Angular
+    cells are centered at ``(j + 0.5) * 2*pi / ntheta``.
+    This polar round trip changes spatial sampling. Use
+    `annular_normalize` for direct normalization of pixel-center annuli.
+
+    The mode formula matches the MMM estimator described by Photutils:
+    https://photutils.readthedocs.io/en/stable/api/photutils.background.MMMBackground.html.
+    No automatic estimator fallback or denominator floor is applied.
     """
     nrad = _positive_integer(nrad, "nrad")
     ntheta = _positive_integer(ntheta, "ntheta")
-    _subpixel_offsets(subpixels)
-    if not isinstance(statistic, str):
-        raise ValueError("statistic must be either 'mean' or 'median'")
-    statistic_key = statistic.lower()
-    if statistic_key not in {"mean", "median"}:
-        raise ValueError("statistic must be either 'mean' or 'median'")
-    sigma_value = None if sigma is None else _finite_nonnegative(sigma, "sigma")
-    if statistic_key == "median" and sigma_value is not None:
-        raise ValueError("sigma is only supported with statistic='mean'")
-
+    subpixels = _positive_integer(subpixels, "subpixels")
+    options = _validate_statistics(statistic, sigma, maxiters, clip_center, clip_scale)
     data, center_value = _prepare_image(image, center, mask)
-    polar = _polar_sample(data, center_value, nrad, ntheta, int(subpixels))
-    result = _polar_reconstruct(
-        _normalize_polar(polar, statistic_key, sigma_value),
-        center_value,
-        data.shape,
-        int(subpixels),
-    )
+    polar = _polar_sample(data, center_value, nrad, ntheta, subpixels)
+    scales, _ = _ring_statistics(polar, *options)
+    normalized = np.full_like(polar, np.nan)
+    with np.errstate(over="ignore", invalid="ignore"):
+        np.divide(
+            polar,
+            scales[:, None],
+            out=normalized,
+            where=np.isfinite(scales[:, None]) & (scales[:, None] != 0),
+        )
+    result = _polar_reconstruct(normalized, center_value, data.shape, subpixels)
     result[np.isnan(data)] = np.nan
     return result
 
@@ -431,91 +288,178 @@ def azimuthal_renormalize(
     nrad: int,
     ntheta: int,
     nsigma: float,
-    sigma: float | None = None,
+    statistic: Literal["mean", "median", "mode"]
+    | Callable[[npt.NDArray[np.float64]], float] = "mean",
+    sigma: float | tuple[float, float] | None = None,
+    maxiters: int | None = 1,
+    clip_center: Literal["mean", "median"] = "mean",
+    clip_scale: Literal["std", "mad_std"] = "std",
     subpixels: int = 10,
     mask: npt.ArrayLike | None = None,
 ) -> npt.NDArray[np.float64]:
-    """Scale each radius using its mean plus or minus sample deviations.
+    """Map each ring's location plus/minus sample deviations to zero and one.
 
     Parameters
     ----------
     image : array-like
-        A nonempty, real, two-dimensional image. Nonfinite and masked pixels
-        are treated as missing.
+        Nonempty, real 2-D image. Masked and nonfinite pixels are missing.
     center : tuple of float
         Zero-based ``(x, y)`` nucleus coordinates within the image.
-    nrad : int
-        Number of integer radius rings, starting at radius 1 pixel.
-    ntheta : int
-        Number of equal-width angular bins in each radius ring.
+    nrad, ntheta : int
+        Number of integer radius rings and equal-angle cells per ring.
     nsigma : float
-        Positive number of sample standard deviations around the ring mean
-        defining the lower and upper scaling bounds.
-    sigma : float or None, optional
-        One-pass rejection threshold in sample standard deviations used while
-        estimating the ring mean and standard deviation.
+        Finite positive number of sample deviations defining each half-range.
+    statistic : {"mean", "median", "mode"} or callable, optional
+        Ring location. Default `"mean"` preserves the original behavior.
+        `"mode"` is ``3*median - 2*mean``. A callable receives finite
+        retained samples and returns a real scalar; empty rings skip it.
+    sigma : float, tuple of float, or None, optional
+        Clipping threshold or ``(lower, upper)`` pair; `None` disables it.
+        Clipping affects the location and spread, not the output samples.
+    maxiters : int or None, optional
+        Maximum clipping passes; `1` by default. `None` means convergence.
+    clip_center : {"mean", "median"}, optional
+        Location for clipping bounds, independently of `statistic`.
+    clip_scale : {"std", "mad_std"}, optional
+        Sample deviation or Gaussian-consistent MAD for clipping only.
+        The output range always uses the retained sample standard deviation.
     subpixels : int, optional
-        Midpoint samples per pixel axis in both polar sampling and Cartesian
-        reconstruction. The default `10` follows the source quadrature.
-    mask : array-like, optional
-        Additional pixels to treat as missing. Values are converted to
-        `bool`.
+        Midpoint samples per axis in polar sampling and reconstruction.
+    mask : array-like or None, optional
+        Additional exclusion mask with the image shape.
 
     Returns
     -------
     ndarray
-        A float64 image with the same shape as `image`. Values are scaled by
-        ``(value - (mean - nsigma*std)) / (2*nsigma*std)`` without clipping.
-        Reconstruction samples below radius `0.5` or at or above radius
-        `nrad + 0.5` are undefined; a pixel is `NaN` if any of its
-        reconstruction subpixels is undefined. Zero variance also produces
-        `NaN`.
-
-    Raises
-    ------
-    ValueError
-        If any integer or scalar parameter is invalid.
+        Float64 image of unchanged shape. Ring values follow
+        ``0.5 + (value - location) / (2*nsigma*std)``, without clipping.
+        Zero spread, missing neighborhoods, and uncovered radii yield `NaN`.
+        The input is never modified.
 
     Notes
     -----
-    The source routine floors the lower bound and maps to the byte range
-    0--255. This API uses the documented mean-minus/plus-`nsigma` sample
-    standard deviation bounds and maps to the unit interval, preserving
-    values outside that interval instead of clipping them.
-
-    Polar angle `0` is along `+y` and increases counterclockwise toward `-x`.
-    Each angular cell is centered at the half-bin angle
-    ``(j + 0.5) * 2*pi / ntheta`` before its configurable midpoint samples
-    are applied.
+    Sampling and estimator definitions match `azimuthal_normalize`.
+    The source floors its lower bound and scales to bytes; this function
+    preserves values outside zero to one and uses no denominator floor.
+    A retained sample deviation exceeding the float64 range makes its ring
+    undefined, even when a scaled ratio could be represented.
     """
     nrad = _positive_integer(nrad, "nrad")
     ntheta = _positive_integer(ntheta, "ntheta")
-    _subpixel_offsets(subpixels)
-    nsigma_value = _finite_positive(nsigma, "nsigma")
-    sigma_value = None if sigma is None else _finite_nonnegative(sigma, "sigma")
-
+    subpixels = _positive_integer(subpixels, "subpixels")
+    nsigma = _finite_positive(nsigma, "nsigma")
+    options = _validate_statistics(statistic, sigma, maxiters, clip_center, clip_scale)
     data, center_value = _prepare_image(image, center, mask)
-    polar = _polar_sample(data, center_value, nrad, ntheta, int(subpixels))
-    normalized_polar = np.full_like(polar, np.nan, dtype=np.float64)
-    for index, row in enumerate(polar):
-        values = row[np.isfinite(row)]
-        if values.size == 0:
-            continue
-        mean, std = _rejected_mean(values, sigma_value)
-        if not np.isfinite(mean) or not np.isfinite(std) or std == 0.0:
-            continue
-        lower = mean - nsigma_value * std
-        width = 2.0 * nsigma_value * std
-        if not np.isfinite(lower) or not np.isfinite(width) or width == 0.0:
-            continue
-        finite = np.isfinite(row)
-        normalized_polar[index, finite] = (row[finite] - lower) / width
-
-    result = _polar_reconstruct(
-        normalized_polar,
-        center_value,
-        data.shape,
-        int(subpixels),
-    )
+    polar = _polar_sample(data, center_value, nrad, ntheta, subpixels)
+    location, std = _ring_statistics(polar, *options, return_std=True)
+    normalized = np.full_like(polar, np.nan)
+    usable = np.isfinite(location) & np.isfinite(std) & (std > 0)
+    # Divide in stages so a representable result does not need a finite 2*std.
+    with np.errstate(over="ignore", invalid="ignore", divide="ignore"):
+        normalized[usable] = (polar[usable] / 2.0 - location[usable, None] / 2.0) / std[
+            usable, None
+        ] / nsigma + 0.5
+    result = _polar_reconstruct(normalized, center_value, data.shape, subpixels)
     result[np.isnan(data)] = np.nan
+    return result
+
+
+def annular_normalize(
+    image: npt.ArrayLike,
+    center: tuple[float, float],
+    *,
+    radii: npt.ArrayLike,
+    statistic: Literal["mean", "median", "mode"]
+    | Callable[[npt.NDArray[np.float64]], float] = "median",
+    sigma: float | tuple[float, float] | None = None,
+    maxiters: int | None = 1,
+    clip_center: Literal["mean", "median"] = "mean",
+    clip_scale: Literal["std", "mad_std"] = "std",
+    mask: npt.ArrayLike | None = None,
+) -> npt.NDArray[np.float64]:
+    """Divide original pixels by statistics in explicit radial intervals.
+
+    Parameters
+    ----------
+    image : array-like
+        Nonempty, real 2-D image. Masked and nonfinite pixels are missing.
+    center : tuple of float
+        Zero-based ``(x, y)`` nucleus coordinates within the image.
+    radii : array-like
+        At least two finite, strictly increasing nonnegative bin edges in
+        pixels. Each annulus includes its inner edge and excludes its outer
+        edge. Include zero to normalize the central pixel too.
+    statistic : {"mean", "median", "mode"} or callable, optional
+        Divisor for each annulus. `"mode"` is ``3*median - 2*mean``.
+        A callable receives finite retained pixels and returns a real scalar.
+        Empty annuli skip the callable.
+    sigma : float, tuple of float, or None, optional
+        Clipping threshold or ``(lower, upper)`` pair. `None` disables it.
+        Rejected pixels remain in the output; only the divisor uses clipping.
+    maxiters : int or None, optional
+        Maximum clipping passes; `1` by default. `None` means convergence.
+    clip_center : {"mean", "median"}, optional
+        Location used for clipping bounds.
+    clip_scale : {"std", "mad_std"}, optional
+        Sample deviation or Gaussian-consistent MAD used for clipping.
+    mask : array-like or None, optional
+        Additional exclusion mask with the image shape.
+
+    Returns
+    -------
+    ndarray
+        Float64 image with unchanged shape. Missing pixels, pixels outside
+        the radial intervals, and zero/nonfinite divisors produce `NaN`.
+        The input is never modified.
+
+    Notes
+    -----
+    Each finite pixel contributes once with equal weight, according to its
+    center radius. There is no polar resampling or fractional area weighting.
+    This is a different estimator from `azimuthal_normalize`, particularly
+    near the nucleus, masks, and boundaries. Incomplete annuli use their
+    available finite pixels and can therefore give biased divisors.
+
+    Pixel radii are computed once and grouped once, avoiding a separate
+    full bounding-box scan for every annulus.
+
+    Examples
+    --------
+    Normalize two annuli using a clipped mode estimate:
+
+    >>> data = np.ones((9, 9))
+    >>> result = annular_normalize(
+    ...     data, (4, 4), radii=[0, 2, 4], statistic="mode", sigma=3
+    ... )
+    >>> bool(result[4, 4] == 1.0)
+    True
+    """
+    options = _validate_statistics(statistic, sigma, maxiters, clip_center, clip_scale)
+    edges = np.asarray(radii)
+    if edges.ndim != 1 or edges.size < 2 or edges.dtype.kind not in "iuf":
+        raise ValueError("radii must be a 1-D array of at least two real bin edges")
+    edges = np.asarray(edges, dtype=np.float64)
+    if not np.all(np.isfinite(edges)) or edges[0] < 0 or np.any(np.diff(edges) <= 0):
+        raise ValueError("radii must be finite, nonnegative, and strictly increasing")
+    data, (cx, cy) = _prepare_image(image, center, mask)
+    yy = np.arange(data.shape[0], dtype=np.float64)[:, None] - cy
+    xx = np.arange(data.shape[1], dtype=np.float64)[None, :] - cx
+    bins = np.searchsorted(edges, np.hypot(xx, yy), side="right") - 1
+    selected = np.flatnonzero(np.isfinite(data) & (bins >= 0) & (bins < edges.size - 1))
+    groups = bins.ravel()[selected]
+    order = np.argsort(groups, kind="stable")
+    selected = selected[order]
+    groups = groups[order]
+    bounds = np.r_[0, np.flatnonzero(np.diff(groups)) + 1, groups.size]
+    result = np.full(data.shape, np.nan)
+    flat_data = data.ravel()
+    for start, stop in zip(bounds[:-1], bounds[1:], strict=True):
+        if start == stop:
+            continue
+        indices = selected[start:stop]
+        values = flat_data[indices]
+        levels, _ = _ring_statistics(values[None, :], *options)
+        if np.isfinite(levels[0]) and levels[0] != 0:
+            with np.errstate(over="ignore", invalid="ignore"):
+                result.ravel()[indices] = values / levels[0]
     return result
