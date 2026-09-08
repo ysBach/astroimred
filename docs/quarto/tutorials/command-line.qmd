@@ -1,0 +1,60 @@
+---
+title: Work with FITS files from a terminal
+description: Use imred to copy sections, combine images, and apply image arithmetic.
+---
+
+Use `imred copy`, `imred comb`, and `imred arith` for FITS file operations.
+These examples expand the command outlines in the original Sphinx docs.
+
+**Inputs:** install `astroimred[full]` and replace the example paths with your
+own FITS files. These commands create output files; they do not overwrite
+existing outputs unless you add `--overwrite`.
+
+## 1. Inspect the available options
+
+```bash
+imred --help
+imred copy --help
+imred comb --help
+imred arith --help
+```
+
+The installed command's help reflects that installed version. The online
+API follows `main`, which may be newer than the released package.
+
+## 2. Copy an image section
+
+```bash
+imred copy science.fits science-cutout.fits --trimsec '[1:16,1:16]'
+```
+
+FITS sections use one-based, inclusive `(x, y)` bounds. This example selects
+the first 16 pixels on both axes. Quote the section so the shell passes it
+unchanged. See [`imcopy`](../api/imutil.imcopy.imcopy.qmd) for extensions,
+output dtype, and header behavior.
+
+## 3. Combine calibrated exposures
+
+```bash
+imred comb 'calibrated-*.fits' combined.fits --combine average --reject none
+```
+
+Quote the glob so `imred` receives one input expression. Use frames on a
+common pixel grid with compatible units. This command requests an average
+without outlier rejection; it does not calibrate or align the inputs for you.
+
+Choose clipping and normalization using the
+[`imcombine` reference](../api/imutil.imcombine.imcombine.qmd), or follow the
+[Python combination example](combine-images.qmd) first. Diagnostic spread
+images describe the retained samples; they are not propagated uncertainty.
+
+## 4. Apply image arithmetic
+
+```bash
+imred arith science.fits - master-bias.fits science-bias-subtracted.fits
+```
+
+See [`imarith`](../api/imutil.imarith.imarith.qmd) for alignment and error
+handling. Use the [calibration tutorial](calibrate-images.qmd) when you need
+the bias, dark, and flat stages together. The CLI has no `ccdred` subcommand;
+the combined calibration pipeline is a Python API.

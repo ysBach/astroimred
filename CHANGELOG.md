@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- `return_stats=True` details were a dense paragraph; they now use a field
+  table. Guides and docstrings group options while retaining examples and limits.
+
 - Sky fitting and comet enhancement duplicated MMM mode formulas; they now
   share one policy. Equal mean/median of `8e307` previously overflowed in
   sky fitting; mode now stays `8e307`. Sampling and clipping defaults are unchanged.

@@ -1,0 +1,98 @@
+---
+title: Apply bias, dark, and flat correction
+description: Calibrate a synthetic CCD image with supplied masters and verify the result.
+---
+
+Use `ccdred` with prepared bias, dark, and flat masters. This companion to the
+preprocessing reference shows subtraction, dark-exposure scaling, and flat
+normalization.
+
+**Prerequisite:** complete the [FITS quickstart](../quickstart.qmd) and use an
+environment with `astroimred[full]`. All arrays below have the same shape.
+
+## 1. Prepare a science image and three masters
+
+```{python}
+import numpy as np
+from astropy.nddata import CCDData
+
+from astroimred.reduction.preproc import ccdred
+
+science = CCDData(np.full((8, 8), 124.0), unit="adu")
+master_bias = CCDData(np.full((8, 8), 10.0), unit="adu")
+master_dark = CCDData(np.full((8, 8), 2.0), unit="adu")
+master_flat = CCDData(np.full((8, 8), 2.0), unit="adu")
+```
+
+The dark master here is already bias-corrected. Its exposure is 15 seconds;
+the science exposure is 30 seconds. The flat's constant value makes its
+normalization easy to verify.
+
+## 2. Apply the calibration explicitly
+
+```{python}
+calibrated = ccdred(
+    science,
+    mbias=master_bias,
+    mdark=master_dark,
+    mflat=master_flat,
+    dark_scale=True,
+    exptime_data=30.0,
+    exptime_dark=15.0,
+    flat_norm_value=None,
+    do_crrej=False,
+    verbose_bdf=0,
+)
+```
+
+The calculation is `(124 - 10 - 2 * (30 / 15)) / (2 / 2) = 110` ADU.
+Here `flat_norm_value=None` divides the flat by its mean before correction.
+The default `flat_norm_value=1` instead uses the supplied flat normalization.
+
+```{python}
+np.testing.assert_allclose(calibrated.data, 110.0)
+np.testing.assert_allclose(science.data, 124.0)
+calibrated.shape, str(calibrated.unit), float(calibrated.data.mean())
+```
+
+`ccdred` returns a reduced copy. Omitting both a master and its path skips
+that calibration stage; the routine does not discover suitable masters.
+
+## 3. Use FITS files for an observation
+
+Replace the paths below with matching science and master files. This example
+is illustrative and is not executed by the documentation build.
+
+```python
+from astroimred.fitsmgmt.io import load_ccd
+
+science = load_ccd("science.fits")
+calibrated = ccdred(
+    science,
+    mbiaspath="master-bias.fits",
+    mdarkpath="master-dark.fits",
+    mflatpath="master-flat.fits",
+    dark_scale=True,
+    exptime_data=30.0,
+    exptime_dark=15.0,
+    flat_norm_value=None,
+    output="science-calibrated.fits",
+    overwrite=False,
+)
+```
+
+Supply exposure times in the same unit. If you use header lookup instead,
+check `exptime_key` and both exposure values first: missing exposure metadata
+can leave the dark unscaled. `overwrite=False` protects an existing output.
+
+## 4. Check uncertainty before measuring
+
+`ccdred` does not calculate or propagate calibration uncertainties. This
+example verifies calibrated values only; prepare the uncertainty model
+required by your measurement separately.
+
+Combine matching calibrated exposures with the
+[combination tutorial](combine-images.qmd). For fringe subtraction, masks,
+or cosmic-ray rejection, start with the
+[`ccdred` reference](../api/reduction.preproc.ccdred.qmd) and
+[`crrej` reference](../api/reduction.crrej.crrej.qmd).

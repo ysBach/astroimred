@@ -35,8 +35,8 @@ API Reference
    astroimred.reduction.crrej
    astroimred.reduction.preproc
 
-Root-level convenience imports such as ``air.load_ccd`` remain available for
-the lightweight FITS/image helpers, but canonical module naming live under
+Use root-level imports such as ``air.load_ccd`` for short FITS/image scripts.
+Canonical module paths live under
 ``astroimred._core``, ``astroimred.external``, ``astroimred.fitsmgmt``,
 ``astroimred.imutil``, and ``astroimred.viz``.
 
@@ -49,5 +49,7 @@ The visualization helpers require ``astroimred[full]``.
    :toctree: api
 
    astroimred.viz
+   astroimred.viz.enhance
    astroimred.viz.imshow
+   astroimred.viz.rvsf
    astroimred.viz.ticks

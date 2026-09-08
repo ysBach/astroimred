@@ -61,32 +61,53 @@ algorithms; they do not establish which physical coma model fits this image.
 
 ## 3. Compare enhancements
 
-`nrad` chooses the polar radii, from 1 through `nrad` pixels. `ntheta` sets
-the number of equal-angle cells around each radius. Both are explicit
-resolution choices. `subpixels=10` uses the source's 10 × 10 midpoint
-sampling; increasing it improves numerical sampling at increased cost.
+### Set the sampling
+
+| Option | Meaning |
+| --- | --- |
+| `nrad` | Polar radii from 1 through `nrad` pixels |
+| `ntheta` | Number of equal-angle cells around each radius |
+| `subpixels=10` | The source's 10 × 10 midpoint sampling; larger values increase sampling resolution and cost |
 
 The values below are example settings. Choose radial coverage, angular
 resolution, rejection sigma, and kernel widths for your own image.
 
-Both polar normalizers accept `statistic="mean"`, `"median"`, or
-`"mode"`, plus a callable. `azimuthal_normalize` defaults to the median;
-`azimuthal_renormalize` defaults to the mean. The mode is the MMM approximation
-`3 * median - 2 * mean`, not a histogram mode. It can be zero, negative, or
-outside the retained sample range. For normalization, a zero or nonfinite
-divisor is undefined; finite negative divisors are retained. Renormalization
-instead requires a finite positive retained sample standard deviation.
+### Choose the statistic
+
+Both polar normalizers accept `statistic="mean"`, `"median"`, `"mode"`, or a
+callable. Defaults: median for `azimuthal_normalize`, mean for
+`azimuthal_renormalize`.
+
+`"mode"` uses the MMM approximation `3 * median - 2 * mean`, not a histogram
+mode. It can be zero, negative, or outside the retained sample range.
+Normalization accepts finite negative divisors; zero or nonfinite divisors
+are undefined. Renormalization requires a finite positive retained sample
+standard deviation.
+
+The MMM formula is shared with `air.phot.sky_fit(method="MMM")` and
+`air.phot.radial_profile(method="MMM")`. `mmm_dao` is a separate iterative
+estimator. Sampling and clipping defaults differ:
+
+| API | Role |
+| --- | --- |
+| `air.phot.radial_profile` | Calculates annular measurements from supplied centers and widths |
+| `NormStats` | Records the bins or polar cells used in one enhancement pass; performs no estimation |
 
 For a callable, pass a function that accepts one finite 1-D array of retained
 samples and returns one real scalar. Empty rings skip the callable, and a
-nonfinite result is undefined. This gives custom estimators without adding
+nonfinite result is undefined. Use this for custom estimators without new
 statistic-name aliases.
 
-`sigma=None` disables clipping. A scalar is a symmetric threshold; a pair is
-`(lower, upper)`. Clipping uses `clip_center="mean"` or `"median"` and
-`clip_scale="std"` (sample standard deviation, `ddof=1`) or `"mad_std"`.
-These controls are independent of `statistic`. `maxiters=1` is the default
-single pass; use `maxiters=None` to continue until no samples are rejected.
+### Choose clipping independently
+
+| Option | Meaning |
+| --- | --- |
+| `sigma=None` | Disable clipping |
+| Scalar `sigma` or `(lower, upper)` | Symmetric or asymmetric thresholds |
+| `clip_center` | `"mean"` or `"median"`, independent of `statistic` |
+| `clip_scale` | `"std"` (sample standard deviation, `ddof=1`) or `"mad_std"` |
+| `maxiters` | Default `1`: one pass. `None`: continue until no samples are rejected |
+
 Clipping changes the estimates, not the source samples that are transformed.
 For renormalization, `clip_scale` controls rejection only; the output always
 uses the retained sample standard deviation.
@@ -97,6 +118,8 @@ clip_center="median", clip_scale="mad_std"`. On a four-sample ring,
 `sigma=3` with sample `std` can leave a bright outlier because that outlier
 inflates the same spread used for rejection. These settings define an
 estimator; they do not establish a physical coma model.
+
+### Run and compare
 
 ```{python}
 # Crop only for a compact tutorial; the packaged FITS remains complete.
@@ -137,17 +160,22 @@ plt.show()
 Each panel has its own display limits. Compare feature locations and shapes,
 not brightness between panels or between different radii of a normalized image.
 
-Use `return_stats=True` when the radial estimates and their support matter.
-The result is an `EnhancementResult`: use `.image` for the enhanced array and
-`.stats` for a `NormStats` record from the same normalization pass.
-Its `statistic` and `std` arrays are the retained-sample divisor/location
-and standard deviation (`ddof=1`),
-and `n_valid`/`n_used` report support before/after sigma clipping. `n_rejected`
-counts sigma rejections only. For polar methods, `n_samples` is `ntheta` per
-ring; for direct annuli it is the number of in-frame pixel centers, including
-hard-masked and nonfinite centers. `coverage` is `n_valid / n_samples` and is
-`NaN` for a bin with no in-frame samples. These are estimation diagnostics,
-not propagated measurement uncertainties.
+### Inspect the normalization statistics
+
+Set `return_stats=True` to get an `EnhancementResult`: `.image` holds the
+enhanced array; `.stats` holds its `NormStats` record.
+
+| Field | Meaning |
+| --- | --- |
+| `statistic`, `std` | Retained-sample divisor/location and standard deviation (`ddof=1`) |
+| `n_valid`, `n_used` | Support before and after sigma clipping |
+| `n_rejected` | Sigma rejections only |
+| `n_samples` | Polar: `ntheta` per ring. Annular: all in-frame pixel centers, including hard-masked and nonfinite centers |
+| `coverage` | `n_valid / n_samples`; `NaN` when no in-frame samples exist |
+
+These describe estimation support, not propagated measurement uncertainty.
+
+### Exclude stars from estimates
 
 `statistic_mask` excludes pixels from estimates while retaining their original
 finite values in the output. The existing `mask` remains a hard mask: it
@@ -160,10 +188,11 @@ sample can still contribute to reconstruction.
 Use `annular_normalize` when each original pixel should be divided by the
 statistic for the radial interval containing its pixel center. It accepts the
 same statistic and clipping options, but has no `ntheta`, `subpixels`, polar
-resampling, or reconstruction. Each interval is lower-inclusive and
-upper-exclusive: `radii=[0, 2, 5, 10]` means `[0, 2)`, `[2, 5)`, and `[5, 10)`
-pixels. There is no fractional area weighting. Pixels outside the supplied
-intervals remain `NaN`.
+resampling, or reconstruction.
+
+Intervals include the lower edge and exclude the upper edge:
+`radii=[0, 2, 5, 10]` means `[0, 2)`, `[2, 5)`, and `[5, 10)` pixels.
+There is no fractional area weighting. Pixels outside these intervals are `NaN`.
 
 The example uses a compact source cut so those four edges cover most of the
 displayed image. The radius map and grouping are computed once per call; cache
@@ -215,8 +244,8 @@ assert diagnostic.stats.n_rejected[0] == 0
 
 For direct annuli, `diagnostic.stats.radius` is the midpoint of each supplied
 edge pair and `diagnostic.stats.bin_edges` preserves those exact edges.
-Polar rings use integer ring centers and have no `bin_edges`. Annular coverage is relative to
-in-frame centers, not to the area of a complete geometric annulus.
+Polar rings use integer ring centers and have no `bin_edges`.
+Annular coverage is relative to in-frame centers, not a complete geometric annulus.
 
 ## 4. Handle masks and boundaries
 
@@ -233,25 +262,23 @@ masked = air.viz.azimuthal_normalize(
 assert np.isnan(masked[mask]).all()
 ```
 
-Polar cells and reconstructed pixels become `NaN` if any required sample
-is missing. Radius below 0.5 pixels has no polar ring, so the central region
-is undefined for the azimuthal methods. Incomplete outer coverage is also
-`NaN`. A contaminated or incomplete ring uses its remaining valid polar
-cells for the statistic; that partial azimuth coverage can bias the result.
+| Method | Missing-data behavior |
+| --- | --- |
+| Polar sampling and reconstruction | Any missing required sample makes the cell or output pixel `NaN`. Radii below 0.5 pixels and incomplete outer coverage are undefined |
+| `annular_normalize` | Pixel centers outside the supplied intervals are `NaN`. Bounds include the lower edge and exclude the upper; there is no subpixel area weighting |
+| Spatial filtering | Every neighbor must be available. A mask invalidates any output whose stencil touches it |
 
-`annular_normalize` uses the supplied pixel-center intervals directly. Pixels
-outside the last edge are `NaN`; annular bounds are lower-inclusive and
-upper-exclusive, with no subpixel area weighting.
+A contaminated or incomplete polar ring uses its remaining valid cells for
+the statistic. Partial azimuth coverage can bias the result.
 
 For normalization, zero or nonfinite statistics, including a mode or callable
 result, yield `NaN`; finite negative divisors are retained. Renormalization
 requires finite location and positive retained sample variance. No small
 denominator is added, and no implicit background subtraction is performed.
 
-For spatial filtering, every neighbor must be available. A mask therefore
-also invalidates nearby outputs whose stencil touches it. `log=True`
-requires every unmasked finite pixel to be strictly positive; it raises
-`ValueError` instead of silently disabling the logarithm.
+For spatial filtering, `log=True` requires every unmasked finite pixel to be
+strictly positive. Otherwise it raises `ValueError`; it does not silently
+disable the logarithm.
 
 ## Differences from the original programs
 
@@ -272,8 +299,7 @@ programs.
 4. Renormalization defaults to the mean location but accepts the same
    statistics. It maps with $0.5 + (I - L)/(2 N s)$, where $L$ is the selected
    location, $N$ is `nsigma`, and $s$ is the retained sample standard deviation
-   (`ddof=1`); `clip_scale` affects
-   rejection only. Values outside 0–1 are preserved.
+   (`ddof=1`). `clip_scale` affects rejection only. Values outside 0–1 are preserved.
 5. The variable filter retains all eight neighbors when the width rounds
    to zero, so a flat field still gives zero. Unavailable neighbors become
    `NaN` instead of producing bright borders.

@@ -26,11 +26,10 @@ distributed as a sample by the [CometCIEF facility](https://cie.psi.edu/techniqu
 Credit: Samarasinha, N. H., Martin, M. P., and Larson, S. M. (2013),
 *Cometary Coma Image Enhancement Facility*.
 
-The tutorial identifies the target as comet Hale-Bopp. Its description of
-the image as dust continuum conflicts with the FITS `OBJECT='HBcn'` and
-the `321cn.imh` processing history. **The passband is unresolved**; the
-original header is preserved. Do not use this sample as evidence that
-inverse-radius compensation is suitable for a particular passband.
+**The passband is unresolved.** The tutorial identifies comet Hale-Bopp and
+describes dust continuum, but the FITS header has `OBJECT='HBcn'` and a
+`321cn.imh` processing history. The original header is preserved. This sample
+does not establish whether inverse-radius compensation suits a particular passband.
 
 The supplied files and download page do not specify a separate data
 license. This provenance note does not assign AIR's software license to
@@ -49,9 +48,9 @@ Measured on the same original FITS file with standard lossless compressors:
 | xz extreme | `xz -9e` | 1,511,444 |
 | xz with 4-byte delta | `xz --delta=dist=4 --lzma2=preset=9e` | 1,538,052 |
 
-The bundled xz file is 41.3% smaller than the original and is the smallest
-of these measured byte-stream formats. This is not a claim of a globally optimal codec.
-Byte-stream compression also retains the FITS headers exactly.
+The bundled xz file is 41.3% smaller than the original and smallest among
+these measured byte-stream formats. It retains the FITS headers exactly;
+the comparison does not establish a globally optimal codec.
 
 Lossless FITS tiled `GZIP_2` with one full-image tile and quantization disabled
 measured 1,500,480 bytes, but rewrites the FITS container. The bundled archive

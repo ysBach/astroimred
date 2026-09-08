@@ -1,31 +1,42 @@
 # Comet enhancement performance
 
-## Reducers 0.4 and profile diagnostics
+Read the whole-image results before choosing a backend. Faster ring reductions
+do not necessarily make the complete enhancement faster.
+
+## Reducers 0.4: whole-image results
 
 The API now calls these records `NormStats` (`return_stats=True`, `.stats`).
 The benchmark's `--profiles` flag and JSON labels retain their historical names.
 
-September 8, 2026: Python 3.13.11, NumPy 2.4.4, reducers 0.4.0,
-macOS ARM64; median of three warm runs against commit `5d29543`.
+**No material whole-image speed gain:** measured speedups were 0.98–1.02×.
 All compared baseline images matched exactly, including finite masks.
-Whole-image speedups ranged from 0.98–1.02×; this run shows no material
-end-to-end speed gain. Profiles and estimation masks are opt-in.
+Normalization statistics and estimation masks are opt-in.
 
-| 801 × 801 clipped-mode input | Image only | With profile | Added time |
+Measured September 8, 2026, on macOS ARM64: Python 3.13.11, NumPy 2.4.4,
+reducers 0.4.0. Timings are medians of three warm runs against `5d29543`.
+
+| 801 × 801 clipped-mode input | Image only | With statistics | Added time |
 | --- | ---: | ---: | ---: |
 | Polar, hard mask | 861.6 ms | 867.6 ms | 0.69% |
 | Polar, hard + estimation masks | 899.9 ms | 912.0 ms | 1.34% |
 | Direct annuli, hard mask | 44.6 ms | 50.6 ms | 13.3% |
 | Direct annuli, hard + estimation masks | 46.3 ms | 49.2 ms | 6.4% |
 
-All rows use `statistic="mode", sigma=(3, 3), maxiters=5,
-clip_center="median", clip_scale="mad_std"`. Polar rows use `nrad=398`,
-`ntheta=360`, and `subpixels=10`. Direct annuli use unit-width pixel-center
-bins from radius 0.5 through 398.5. The image is a seeded inverse-radius
-coma with Gaussian noise and a fractional center; masks exclude small patches.
-Profiles matched image-only results at `rtol=atol=1e-10` with identical finite
-masks. They added 0.006 MiB (polar) or 0.016 MiB (annular) in peak traced
-allocations; these are not process RSS measurements.
+### Inputs and checks
+
+| Setting | Value |
+| --- | --- |
+| Estimator and clipping, all rows | `statistic="mode", sigma=(3, 3), maxiters=5, clip_center="median", clip_scale="mad_std"` |
+| Polar sampling | `nrad=398, ntheta=360, subpixels=10` |
+| Annular sampling | Unit-width pixel-center bins, radius 0.5 through 398.5 |
+| Image | Seeded inverse-radius coma, Gaussian noise, fractional center |
+| Masks | Small excluded patches |
+
+Statistics-enabled images matched image-only results at `rtol=atol=1e-10`
+with identical finite masks. Peak traced allocations increased by 0.006 MiB
+(polar) or 0.016 MiB (annular). These are not process RSS measurements.
+
+### Reproduce
 
 Reproduce, including 300 × 300 cases, with:
 
@@ -38,13 +49,17 @@ uv run --no-sync python benchmarks/benchmark_comet_enhancement.py \
 Raw measurements: [comet_profile_results.json](comet_profile_results.json).
 Small timing differences are local noise, not universal speed guarantees.
 
-With missing values and injected outliers, isolated ring reductions improved
-1.15–1.28× for mean/std and 1.32–1.38× for mode with MAD clipping. These use
-148 × 360 and 398 × 360 arrays, three warmups and eleven timed calls.
-Reducers 0.4 `minmax` also beat separate NumPy extrema by 1.27–1.46× on
-10 × 300 and 10 × 801 arrays. All compared results were exactly equal.
-The coordinate arrays are finite, so reconstruction now uses `reducers.minmax`.
-These operations are a small fraction of whole-image runtime.
+## Reducers 0.4: individual reductions
+
+| Operation | Measured speedup | Input |
+| --- | --- | --- |
+| Ring mean/std | 1.15–1.28× | 148 × 360 and 398 × 360 arrays with missing values and injected outliers |
+| Ring mode with MAD clipping | 1.32–1.38× | Same ring arrays |
+| `minmax` versus separate NumPy extrema | 1.27–1.46× | Finite 10 × 300 and 10 × 801 arrays |
+
+Ring timings use three warmups and eleven timed calls. All compared results
+were exactly equal. Reconstruction now uses `reducers.minmax` for its finite
+coordinates. These operations are a small fraction of whole-image runtime.
 
 ```bash
 uv run --no-sync python benchmarks/benchmark_comet_statistics.py \
@@ -55,13 +70,24 @@ Raw kernel measurements: [comet_statistics_results.json](comet_statistics_result
 
 ## Earlier optimization baseline
 
-Run `uv run --no-sync python benchmarks/benchmark_comet_enhancement.py --baseline-ref 2fc418a --sizes 300 801 --repeats 3` from the repository root.
+Run from the repository root:
 
-The script checks each unchanged method against the pre-optimization commit before timing it. It compares complete finite/NaN masks and float64 outputs with `rtol=atol=1e-10`. The tolerance allows changed accumulation order; production code does not use that tolerance or dispatch on benchmark settings.
+```bash
+uv run --no-sync python benchmarks/benchmark_comet_enhancement.py \
+    --baseline-ref 2fc418a --sizes 300 801 --repeats 3
+```
 
-## Measured results
+Before timing, the script checks unchanged methods against the pre-optimization
+commit. It compares complete finite/NaN masks and float64 outputs at
+`rtol=atol=1e-10`. This tolerance permits changed accumulation order; production
+code uses neither the tolerance nor benchmark-specific dispatch.
 
-September 8, 2026, macOS ARM64, Python 3.13.11, NumPy 2.4.4, reducers 0.3.0. Median of three warm runs; imports and input creation excluded. The 801 × 801 input is a seeded synthetic inverse-radius coma with Gaussian noise and a fractional center. These are local measurements, not universal speed guarantees.
+### Measured results
+
+Measured September 8, 2026, on macOS ARM64: Python 3.13.11, NumPy 2.4.4,
+**reducers 0.3.0**. Medians of three warm runs exclude imports and input creation.
+The 801 × 801 input is a seeded synthetic inverse-radius coma with Gaussian
+noise and a fractional center. These are local measurements, not speed guarantees.
 
 | Operation | Before | After | Speedup |
 | --- | ---: | ---: | ---: |
@@ -73,26 +99,57 @@ September 8, 2026, macOS ARM64, Python 3.13.11, NumPy 2.4.4, reducers 0.3.0. Med
 | RVSF, `a=1, b=1, n=0.3` | 3.444 s | 0.715 s | 4.82× |
 | RVSF, `a=0.5, b=0.8, n=1` | 3.416 s | 0.479 s | 7.13× |
 
-All rows use `subpixels=10`. Polar rows use `nrad=398, ntheta=360`; clipped rows use `sigma=3`. The new direct annular median takes 0.035 s for unit-width intervals from radius 0.5 through 398.5. It has different sampling semantics, so it is not a parity comparison with polar normalization.
+All rows use `subpixels=10`; polar rows use `nrad=398, ntheta=360`; clipped
+rows use `sigma=3`.
+
+The direct annular median takes 0.035 s for unit-width intervals from radius
+0.5 through 398.5. Its sampling differs from polar normalization, so this is
+not a parity comparison.
 
 Raw measurements, including 300 × 300 cases and maximum output differences, are in [comet_enhancement_results.json](comet_enhancement_results.json).
 
-## Why it changes
+### Why it changes
 
-1. Constant-width RVSF evaluates one stencil. Variable-width RVSF caches the last rounded width and stencil value per pixel; unchanged widths need no neighbor gathers.
-2. Radius and polar operations reuse one-dimensional coordinates. Reconstruction skips pixels whose midpoint radii cannot all have valid rings.
+1. Constant-width RVSF evaluates one stencil. Variable-width RVSF caches each
+   pixel's last rounded width and stencil value; unchanged widths need no
+   neighbor gathers.
+2. Radius and polar operations reuse one-dimensional coordinates.
+   Reconstruction skips pixels whose midpoint radii cannot all have valid rings.
 3. Ring statistics use reducers across rows. These timings used reducers 0.3.0;
    the package now requires `reducers>=0.4.0`. Remeasure before attributing these
    results to the newer backend.
-4. Direct annular normalization computes a radius map once and groups pixels once. It avoids repeatedly constructing an aperture bounding box for every ring.
+4. Direct annular normalization computes a radius map and groups pixels once,
+   avoiding an aperture bounding box for every ring.
 
 ## Tradeoffs
 
-Caching uses memory. For gentle-growth RVSF, peak traced allocations rise from 69.8 to 85.9 MiB; the constant-width case rises to 77.5 MiB. The steep case falls to 54.6 MiB because fewer pixels remain valid. Polar operations fall from 72.6 to 68.9 MiB, and radius multiplication falls from 34.3 to 15.4 MiB. These are separate `tracemalloc` samples, not process peak RSS.
+### Memory
 
-`annular_normalize` gives every finite pixel center equal weight in explicit radial intervals. CometCIEF-style normalization averages equal-angle polar samples and reconstructs them. Exact `astroapers` overlap weights would define a third estimator; they are not silently substituted. This implementation uses the already-available NumPy radius map because a requested outer radius can extend far beyond the image without requiring a huge aperture mask.
+| Operation | Peak traced allocations before → after |
+| --- | --- |
+| Gentle-growth RVSF | 69.8 → 85.9 MiB |
+| Constant-width RVSF | Increased to 77.5 MiB |
+| Steep RVSF | Decreased to 54.6 MiB; fewer pixels remain valid |
+| Polar operations | 72.6 → 68.9 MiB |
+| Radius multiplication | 34.3 → 15.4 MiB |
 
-`statistic="mode"` is the MMM approximation `3*median - 2*mean`, not an exact density mode. Strong outliers can make it negative or move it outside the observed range. Use explicit clipping or a custom statistic when appropriate. Clipping modifies only the estimated divisor/location/spread; rejected bright features remain in the output.
+Caching uses memory. These are separate `tracemalloc` samples, not process peak RSS.
+
+### Sampling and estimators
+
+`annular_normalize` weights finite pixel centers equally within explicit radial
+intervals. CometCIEF-style normalization averages equal-angle polar samples and
+reconstructs them. Exact `astroapers` overlap weights would define a third
+estimator; they are not silently substituted.
+
+The NumPy radius map handles an outer radius far beyond the image without
+requiring a huge aperture mask.
+
+`statistic="mode"` uses the MMM approximation `3*median - 2*mean`, not an exact
+density mode. Strong outliers can make it negative or move it outside the
+observed range. Use explicit clipping or a custom statistic when appropriate.
+Clipping changes only the estimated divisor/location/spread; rejected bright
+features remain in the output.
 
 ## Finite-count backend check
 

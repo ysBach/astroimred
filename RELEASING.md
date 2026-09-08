@@ -11,10 +11,10 @@ Use the exact commit that passed the rehearsal.
 
 ## Shared convention
 
-Use the ImCombiners tag-trigger pattern with reusable CI and early release-note
-validation from reducers, and installed-artifact checks from pqfilt. Keep one
-`release.yml` responsible for publication. Do not trigger publishing by creating
-a GitHub release: that release records successful package publication.
+Keep publication in one `release.yml`. The convention combines ImCombiners'
+tag trigger, reducers' reusable CI and early release-note checks, and pqfilt's
+installed-artifact checks. A GitHub release records successful publication;
+creating one does not trigger publishing.
 
 | Package type | Artifacts | Registries |
 | --- | --- | --- |
@@ -114,18 +114,28 @@ temporary OIDC credentials. Never synchronize `~/.venvs/ysbpy`.
 
 ## Coverage and recovery
 
-CI builds a `py3-none-any` wheel and sdist. Linux tests cover Python 3.11–3.14;
-macOS ARM64 and Windows x86-64 test Python 3.13. Linux also installs the sdist
-on Python 3.14. Every install uses the `full` extra, a fresh environment, an
-isolated import/license/FITS check, CLI help, and the Python suite. Release-tool
+### Check the tested artifacts
+
+CI builds a `py3-none-any` wheel and sdist.
+
+| Platform | Python coverage |
+| --- | --- |
+| Linux | 3.11–3.14; also installs the sdist on 3.14 |
+| macOS ARM64 | 3.13 |
+| Windows x86-64 | 3.13 |
+
+Each install uses the `full` extra in a fresh environment. Checks cover isolated
+imports, license/FITS handling, CLI help, and the Python suite. Release-tool
 tests and Ruff checks cover `scripts/` and `.github/tests/`; existing application
-formatting is outside this publishing change. These are configured targets;
-successful hosted runs establish actual compatibility.
+formatting is outside this publishing change. These are configured targets,
+not evidence of compatibility until hosted runs pass.
 
 `UV_NO_SOURCES=true` disables developer overrides. Dependencies must be available
 from registries; a test that needs unpublished sibling changes must fail until
 those dependencies are released. CI intentionally does not substitute sibling
 checkouts. The same retained wheel and sdist are uploaded without rebuilding.
+
+### Recover without changing published files
 
 - **Before uploading:** fix the problem, commit, and rehearse again. Source or
   artifact changes after a tag push require a new version/tag; never move a
