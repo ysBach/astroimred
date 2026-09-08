@@ -441,6 +441,7 @@ def imcombine(
     grow: float | None = None,
     output_sample_flags: StrPathLike | None = None,
 ) -> CCDData | dict | tuple:
+    """Combine FITS files or CCDData inputs with imcombiners."""
     if diagnostics not in (None, "simple", "full"):
         raise ValueError("diagnostics must be None, 'simple', or 'full'.")
     if grow is not None:
@@ -1021,15 +1022,13 @@ imcombine.__doc__ = f"""A FITS-file helper for ``imcombiners.ndcombine``.
         `None` or non-positive values disable chunking.
 
     output : path-like, optional
-        The path to the final combined FITS file. It has dtype of `dtype` and
-        dimension identical to each input image. Optional keyword arguments for
-        ``fits.writeto()`` can be provided as ``**kwargs``.
+        Write the final combined image here. `dtype` controls the output data
+        type; offsets can change the output shape.
 
-    output_xxx : path-like, optional
-        The output path to the mask, number of rejected pixels at each
-        position, ``std`` diagnostic, lower and upper bounds for rejection,
-        and integer output flags (see `mask_rej`, `mask_thresh`, `std`, `low`,
-        `upp`, `nit`, and `output_flags` in Returns.)
+    output_mask, output_nrej, output_std, output_low, output_upp, output_flags, output_sample_flags : path-like, optional
+        FITS paths for the combined mask, rejection count, spread, rejection
+        bounds, output flags, and per-sample flags, respectively. Each `None`
+        default skips writing that diagnostic. See Returns for their meanings.
 
     output_sample_flags : path-like, optional
         Write the stack-shaped `uint8` sample flags as a FITS image and enable
@@ -1042,10 +1041,9 @@ imcombine.__doc__ = f"""A FITS-file helper for ``imcombiners.ndcombine``.
 
     Returns
     -------
-    Returns the followings depending on `full` and `return_dict`.
-
     comb : `astropy.nddata.CCDData` (dtype `dtype`)
-        The combined data.
+        The combined data. Returned alone without diagnostics; otherwise it
+        is the first tuple entry or the ``"comb"`` dictionary value.
 
     {docstrings.NDCOMB_RETURNS_COMMON(indent=4)}
 
@@ -1060,5 +1058,4 @@ imcombine.__doc__ = f"""A FITS-file helper for ``imcombiners.ndcombine``.
         `output_flags` uses a separate per-output-pixel flag namespace;
         its bit 16 indicates that growth added at least one rejection there.
 
-    {docstrings.IMCOMBINE_LINK(indent=4)}
     """

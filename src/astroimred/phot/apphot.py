@@ -220,11 +220,10 @@ def apphot_annulus(
 
     Returns
     -------
-    phot_f: `~astropy.table.Table`
-        The photometry result.
-
-    bad code
-      * 1 (2^0) : weighted masked support ``> npix_mask_ap`` within aperture.
+    phot_f : pandas.DataFrame or astropy.table.QTable
+        Photometry results. The `bad` column is `1` when the weighted masked
+        aperture support exceeds `npix_mask_ap`, and `0` otherwise. Return a
+        DataFrame when `pandas=True` (default); otherwise return a QTable.
 
     Notes
     -----

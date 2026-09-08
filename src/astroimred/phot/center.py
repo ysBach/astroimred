@@ -868,9 +868,9 @@ def find_center_2dg(
     sky_kw : dict, optional
         The keyword arguments of `.backgroud.sky_fit`. Default is `None`.
 
-    tol_shift : float
-        The absolute tolerance for the shift. If the shift in centroid after
-        iteration is smaller than this, iteration stops. Default is ``1.0e-4``.
+    atol_shift : float, optional
+        Stop when the fitted shift in pixels is below this absolute tolerance.
+        Default is `1.0e-4`.
 
     max_shift: float
         The maximum acceptable shift. If shift is larger than this, raises
