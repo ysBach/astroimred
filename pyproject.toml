@@ -3,6 +3,8 @@ name = "astroimred"
 version = "0.3.0"
 description = "FITS file management and lightweight inspection utilities."
 readme = "README.md"
+license = "BSD-3-Clause"
+license-files = ["LICENSE"]
 authors = [
     { name = "ysBach", email = "ysbach93@gmail.com" }
 ]
@@ -16,11 +18,17 @@ dependencies = [
     "pyarrow>=14",
     "astroapers>=0.1.2",
     "imcombiners>=0.1.1",
-    "reducers>=0.3.0",
+    "reducers>=0.4.0",
 ]
 
 [project.scripts]
 imred = "astroimred.reduction.cli:main"
+
+[project.urls]
+Documentation = "https://ysbach.github.io/astroimred/"
+Repository = "https://github.com/ysBach/astroimred"
+Issues = "https://github.com/ysBach/astroimred/issues"
+Changelog = "https://github.com/ysBach/astroimred/blob/main/CHANGELOG.md"
 
 [project.optional-dependencies]
 phot = [
@@ -92,3 +100,6 @@ line-ending = "auto"
 [build-system]
 requires = ["uv_build>=0.9.18,<0.10.0"]
 build-backend = "uv_build"
+
+[tool.uv.build-backend]
+source-include = ["CHANGELOG.md", "RELEASING.md", "scripts/**", ".github/tests/**", "tests/**"]
