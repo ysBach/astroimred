@@ -1,0 +1,5 @@
+# Keep the API renderer and its parser on the tested versions used by these sites.
+quartodoc==0.11.1
+griffe==0.49.0
+jupyter>=1.1,<2
+matplotlib>=3.9
