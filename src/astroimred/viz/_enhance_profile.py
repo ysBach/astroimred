@@ -46,6 +46,10 @@ class RadialProfile:
     image. Only `n_valid` and `n_used` exclude hard and estimation masks;
     `n_samples` counts opportunities before masking. `n_rejected` counts
     sigma rejections only.
+
+    This is a record of the normalization pass, not another estimator.
+    Use `astroimred.phot.radprof.radial_profile` for standalone annular
+    photometry with `sky_fit` options.
     """
 
     radius: npt.NDArray[np.float64]

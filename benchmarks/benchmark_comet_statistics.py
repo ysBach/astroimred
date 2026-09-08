@@ -201,7 +201,7 @@ def main() -> None:
         parser.error("repeats must be positive and warmups must be nonnegative")
 
     load_baseline(args.baseline_ref)
-    baseline = sys.modules["_comet_benchmark_baseline._enhance_stats"]
+    baseline = sys.modules["_comet_benchmark_baseline.viz._enhance_stats"]
     current = importlib.import_module("astroimred.viz._enhance_stats")
     statistics_records = [
         benchmark_statistics(

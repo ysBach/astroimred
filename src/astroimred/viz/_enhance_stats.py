@@ -8,6 +8,7 @@ import numpy as np
 import numpy.typing as npt
 import reducers as rd
 
+from .._core.statistics import _mode_from_stats
 from ._enhance_common import _positive_integer
 
 Statistic = str | Callable[[npt.NDArray[np.float64]], float]
@@ -221,8 +222,7 @@ def _ring_statistics(
             clipping_median = _median(retained)
         levels = clipping_median
         if statistic == "mode":
-            with np.errstate(over="ignore", invalid="ignore"):
-                levels += 2.0 * (levels - mean)
+            levels = _mode_from_stats(mean, levels)
     levels[~np.isfinite(levels)] = np.nan
     if return_counts:
         n_used = rd.count_finite(retained, axis=1)

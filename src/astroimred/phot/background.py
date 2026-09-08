@@ -7,6 +7,7 @@ from astropy.nddata import CCDData
 from astropy.table import Table
 
 from astroimred._core.numeric import _as_reducer_1d_values, sigma_clipper
+from astroimred._core.statistics import _mode_from_stats
 
 __all__ = ["annul2values", "quick_sky_circ", "sky_fit", "mmm_dao"]
 
@@ -115,10 +116,13 @@ def sky_fit(
 
           * ``"mean"``/``"median"``: simple nanmean/nanmedian of the sky values.
           * ``"sex"``  == (med_factor, mean_factor) = (2.5, 1.5)
-          * ``"IRAF"`` == (med_factor, mean_factor) = (3, 2)
+          * ``"IRAF"`` == (med_factor, mean_factor) = (3, 2), or the mean
+            when the mean is below the median.
           * ``"MMM"``  == (med_factor, mean_factor) = (3, 2)
 
         where ``msky = (med_factor * med) - (mean_factor * mean)``.
+        `"MMM"` uses the same formula as visualization's `statistic="mode"`;
+        it is not the iterative `mmm_dao` algorithm.
         For the ``"sex"`` method, if (mean - median)/std > 0.3, median is used
         instead of the above formula, which mimics the SExtractor's way.
         If a callable is given, it should have the signature
@@ -250,19 +254,13 @@ def _sky_fit(
             ddof=std_ddof,
             copy=False,
         )
-        if method in {"sex", "iraf", "mmm"}:
-            med = rdl.median_valid(sky_clipped, copy=False)
-        if method == "sex":
-            use_median = std > 0.0 and (mean - med) / std > 0.3
-            msky = med if use_median else (2.5 * med) - (1.5 * mean)
-        elif method == "median":
+        if method == "median":
             msky = rdl.median_valid(sky_clipped, copy=False)
         elif method == "mean":
             msky = mean
-        elif method == "iraf":
-            msky = mean if (mean < med) else 3 * med - 2 * mean
-        elif method == "mmm":
-            msky = 3 * med - 2 * mean
+        elif method in {"sex", "iraf", "mmm"}:
+            med = rdl.median_valid(sky_clipped, copy=False)
+            msky = _mode_from_stats(mean, med, std, method=method)
         else:
             raise ValueError(f"{method=} not understood")
 

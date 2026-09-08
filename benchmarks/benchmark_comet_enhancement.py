@@ -38,21 +38,35 @@ def load_baseline(ref: str) -> dict[str, Callable]:
     package = types.ModuleType("_comet_benchmark_baseline")
     package.__path__ = []
     sys.modules[package.__name__] = package
+    for child in ("_core", "viz"):
+        child_package = types.ModuleType(f"{package.__name__}.{child}")
+        child_package.__path__ = []
+        sys.modules[child_package.__name__] = child_package
+        setattr(package, child, child_package)
     functions = {}
-    for name in (
-        "_enhance_common",
-        "_enhance_profile",
-        "_enhance_stats",
-        "enhance",
-        "rvsf",
-    ):
-        path = f"src/astroimred/viz/{name}.py"
+    modules = [
+        ("_core.statistics", "src/astroimred/_core/statistics.py"),
+        *(
+            (f"viz.{name}", f"src/astroimred/viz/{name}.py")
+            for name in (
+                "_enhance_common",
+                "_enhance_profile",
+                "_enhance_stats",
+                "enhance",
+                "rvsf",
+            )
+        ),
+    ]
+    for qualified_name, path in modules:
         exists = subprocess.run(
             ["git", "cat-file", "-e", f"{ref}:{path}"],
             cwd=root,
             capture_output=True,
         )
-        if exists.returncode and name.startswith("_"):
+        if exists.returncode and (
+            qualified_name == "_core.statistics"
+            or qualified_name.rsplit(".", 1)[-1].startswith("_")
+        ):
             continue
         source = subprocess.run(
             ["git", "show", f"{ref}:{path}"],
@@ -61,8 +75,9 @@ def load_baseline(ref: str) -> dict[str, Callable]:
             capture_output=True,
             text=True,
         ).stdout
-        module = types.ModuleType(f"{package.__name__}.{name}")
+        module = types.ModuleType(f"{package.__name__}.{qualified_name}")
         sys.modules[module.__name__] = module
+        module.__package__ = module.__name__.rpartition(".")[0]
         exec(compile(source, f"{ref}:{path}", "exec"), module.__dict__)
         functions.update(
             {key: getattr(module, key) for key in getattr(module, "__all__", ())}

@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Sky fitting and comet enhancement duplicated MMM mode formulas; they now
+  share one policy. Equal mean/median of `8e307` previously overflowed in
+  sky fitting; mode now stays `8e307`. Sampling and clipping defaults are unchanged.
+
 - Radial normalizers returned only images; `return_profile=True` now adds
   ring levels, spreads, coverage, and rejection counts.
 - Masks removed stars from the output; `statistic_mask` now excludes them

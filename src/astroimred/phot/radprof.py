@@ -138,6 +138,13 @@ def radial_profile(
     center_val : float
         The value of the pixel at the center position.
 
+    Notes
+    -----
+    Each annulus delegates its statistics to `sky_fit`; there is no separate
+    mode estimator here. `radii` are annulus centers, and `thickness` can
+    produce overlapping annuli. Visualization's `annular_normalize` instead
+    takes nonoverlapping bin edges and transforms the original image.
+
     Example
     -------
     >>> profs, center_val = radial_profile(im, center=(50, 50), radii=np.arange(1, 11), thickness=2)
