@@ -156,6 +156,9 @@ quartodoc:
         - viz.enhance.enhance_rho
         - viz.enhance.azimuthal_normalize
         - viz.enhance.azimuthal_renormalize
+        - viz.enhance.annular_normalize
+        - viz.enhance.RadialProfile
+        - viz.enhance.EnhancementResult
         - viz.rvsf.radially_variable_filter
     - title: Coordinates and observing geometry
       desc: Inspect WCS, derive local transforms, and compute airmass.

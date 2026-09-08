@@ -2,6 +2,7 @@
 
 from collections.abc import Callable
 from statistics import NormalDist
+from typing import Literal, overload
 
 import numpy as np
 import numpy.typing as npt
@@ -57,12 +58,17 @@ def _mean_std(
     scale = np.maximum(high - reference, reference - low)
     scale[~np.isfinite(scale) | (scale == 0.0)] = 1.0
     centered = (values - reference[:, None]) / scale[:, None]
-    mean = reference + scale * rd.nanmean(centered, axis=1)
-    std = np.full_like(mean, np.nan)
     if return_std:
         with np.errstate(over="ignore", invalid="ignore"):
-            std = scale * rd.nanstd(centered, axis=1, ddof=1)
+            centered_std, centered_mean = rd.nanstd(
+                centered, axis=1, ddof=1, return_mean=True
+            )
+            mean = reference + scale * centered_mean
+            std = scale * centered_std
         std[rd.count_finite(values, axis=1) == 1] = 0.0
+    else:
+        mean = reference + scale * rd.nanmean(centered, axis=1)
+        std = np.full_like(mean, np.nan)
     return mean, std
 
 
@@ -80,6 +86,7 @@ def _median(values: npt.NDArray[np.float64]) -> npt.NDArray[np.float64]:
     return median
 
 
+@overload
 def _ring_statistics(
     samples: npt.NDArray[np.float64],
     statistic: Statistic,
@@ -89,25 +96,93 @@ def _ring_statistics(
     clip_scale: str,
     *,
     return_std: bool = False,
-) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]]:
+    return_counts: Literal[False] = False,
+) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]]: ...
+
+
+@overload
+def _ring_statistics(
+    samples: npt.NDArray[np.float64],
+    statistic: Statistic,
+    sigma: tuple[float, float] | None,
+    maxiters: int | None,
+    clip_center: str,
+    clip_scale: str,
+    *,
+    return_std: bool = False,
+    return_counts: Literal[True],
+) -> tuple[
+    npt.NDArray[np.float64],
+    npt.NDArray[np.float64],
+    npt.NDArray[np.intp],
+    npt.NDArray[np.intp],
+]: ...
+
+
+def _ring_statistics(
+    samples: npt.NDArray[np.float64],
+    statistic: Statistic,
+    sigma: tuple[float, float] | None,
+    maxiters: int | None,
+    clip_center: str,
+    clip_scale: str,
+    *,
+    return_std: bool = False,
+    return_counts: bool = False,
+) -> (
+    tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]]
+    | tuple[
+        npt.NDArray[np.float64],
+        npt.NDArray[np.float64],
+        npt.NDArray[np.intp],
+        npt.NDArray[np.intp],
+    ]
+):
     """Reduce rows; clipping affects estimates, never the original samples.
 
     Keep original values for selection and clipping. Center and scale only
     the variance calculation: a large reference must not erase a faint
     median in a ring containing a bright star.
+
+    Parameters
+    ----------
+    return_std : bool, optional
+        Return sample standard deviations in the second output array.
+    return_counts : bool, optional
+        Append finite sample counts before and after clipping as integer arrays.
+
+    Returns
+    -------
+    tuple of ndarray
+        ``(levels, std)`` by default. If `return_counts=True`, return
+        ``(levels, std, n_valid, n_used)`` where `n_valid` counts finite input
+        samples and `n_used` counts finite samples retained after clipping.
     """
+    n_valid = rd.count_finite(samples, axis=1) if return_counts else None
     retained = np.where(np.isfinite(samples), samples, np.nan)
+    clipping_median: npt.NDArray[np.float64] | None = None
+    clipping_mean: npt.NDArray[np.float64] | None = None
+    clipping_spread: npt.NDArray[np.float64] | None = None
+    clipping_return_std: bool | None = None
     if sigma is not None:
         iteration = 0
         while maxiters is None or iteration < maxiters:
+            if clip_center == "median" or clip_scale == "mad_std":
+                clipping_median = _median(retained)
             if clip_center == "mean" or clip_scale == "std":
-                location, spread = _mean_std(retained, return_std=clip_scale == "std")
+                clipping_mean, clipping_spread = _mean_std(
+                    retained, return_std=clip_scale == "std"
+                )
+                clipping_return_std = clip_scale == "std"
+                location = clipping_mean
+                spread = clipping_spread
             if clip_center == "median":
-                location = _median(retained)
+                location = clipping_median
             if clip_scale == "mad_std":
-                median = _median(retained)
                 with np.errstate(over="ignore", invalid="ignore"):
-                    spread = _MAD_TO_STD * _median(np.abs(retained - median[:, None]))
+                    spread = _MAD_TO_STD * _median(
+                        np.abs(retained - clipping_median[:, None])
+                    )
             with np.errstate(over="ignore", invalid="ignore"):
                 # Zero sigma means an exact bound even if spread overflowed.
                 lower = location if sigma[0] == 0 else location - sigma[0] * spread
@@ -116,11 +191,20 @@ def _ring_statistics(
             if not np.any(rejected):
                 break
             retained[rejected] = np.nan
+            clipping_median = None
+            clipping_mean = None
+            clipping_spread = None
+            clipping_return_std = None
             iteration += 1
 
     std = np.full(samples.shape[0], np.nan)
     if return_std or (isinstance(statistic, str) and statistic in {"mean", "mode"}):
-        mean, std = _mean_std(retained, return_std=return_std)
+        if clipping_mean is not None and return_std == clipping_return_std:
+            mean = clipping_mean
+            if return_std:
+                std = clipping_spread
+        else:
+            mean, std = _mean_std(retained, return_std=return_std)
     if callable(statistic):
         levels = np.full(samples.shape[0], np.nan)
         for index, row in enumerate(retained):
@@ -133,9 +217,14 @@ def _ring_statistics(
     elif statistic == "mean":
         levels = mean
     else:
-        levels = _median(retained)
+        if clipping_median is None:
+            clipping_median = _median(retained)
+        levels = clipping_median
         if statistic == "mode":
             with np.errstate(over="ignore", invalid="ignore"):
                 levels += 2.0 * (levels - mean)
     levels[~np.isfinite(levels)] = np.nan
+    if return_counts:
+        n_used = rd.count_finite(retained, axis=1)
+        return levels, std, n_valid, n_used
     return levels, std

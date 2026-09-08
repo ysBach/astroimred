@@ -33,14 +33,27 @@ from astroimred import viz
 
 
 def load_baseline(ref: str) -> dict[str, Callable]:
-    """Load the two enhancement modules from a read-only Git snapshot."""
+    """Load enhancement modules and their helpers from a Git snapshot."""
     root = Path(__file__).resolve().parents[1]
     package = types.ModuleType("_comet_benchmark_baseline")
     package.__path__ = []
     sys.modules[package.__name__] = package
     functions = {}
-    for name in ("enhance", "rvsf"):
+    for name in (
+        "_enhance_common",
+        "_enhance_profile",
+        "_enhance_stats",
+        "enhance",
+        "rvsf",
+    ):
         path = f"src/astroimred/viz/{name}.py"
+        exists = subprocess.run(
+            ["git", "cat-file", "-e", f"{ref}:{path}"],
+            cwd=root,
+            capture_output=True,
+        )
+        if exists.returncode and name.startswith("_"):
+            continue
         source = subprocess.run(
             ["git", "show", f"{ref}:{path}"],
             cwd=root,
@@ -51,11 +64,13 @@ def load_baseline(ref: str) -> dict[str, Callable]:
         module = types.ModuleType(f"{package.__name__}.{name}")
         sys.modules[module.__name__] = module
         exec(compile(source, f"{ref}:{path}", "exec"), module.__dict__)
-        functions.update({key: getattr(module, key) for key in module.__all__})
+        functions.update(
+            {key: getattr(module, key) for key in getattr(module, "__all__", ())}
+        )
     return functions
 
 
-def measure(function: Callable[[], np.ndarray], repeats: int) -> dict[str, float]:
+def measure(function: Callable[[], object], repeats: int) -> dict[str, float]:
     """Measure warm median runtime and a separate peak allocation sample."""
     function()
     elapsed = []
@@ -80,6 +95,11 @@ def main() -> None:
     parser.add_argument("--baseline-ref", required=True)
     parser.add_argument("--sizes", nargs="+", type=int, default=[300, 801])
     parser.add_argument("--repeats", type=int, default=3)
+    parser.add_argument(
+        "--profiles",
+        action="store_true",
+        help="Also compare clipped mode and measure profile/statistic-mask overhead.",
+    )
     parser.add_argument("--output", type=Path)
     args = parser.parse_args()
     if args.repeats < 1 or any(size < 9 for size in args.sizes):
@@ -120,6 +140,22 @@ def main() -> None:
             ("rvsf_growing", "radially_variable_filter", {"a": 1, "b": 1, "n": 0.3}),
             ("rvsf_steep", "radially_variable_filter", {"a": 0.5, "b": 0.8, "n": 1}),
         ]
+        if args.profiles:
+            cases.append(
+                (
+                    "polar_clipped_mode",
+                    "azimuthal_normalize",
+                    {
+                        "nrad": nrad,
+                        "ntheta": 360,
+                        "statistic": "mode",
+                        "sigma": (3, 3),
+                        "maxiters": 5,
+                        "clip_center": "median",
+                        "clip_scale": "mad_std",
+                    },
+                )
+            )
         for label, name, kwargs in cases:
             old = partial(baseline[name], data, center, **kwargs)
             new = partial(getattr(viz, name), data, center, **kwargs)
@@ -154,6 +190,56 @@ def main() -> None:
         records.append(
             {"case": "annular_median", "shape": [size, size], "current": annular}
         )
+        if args.profiles:
+            # Deterministic exclusions exercise support near masks. They are
+            # benchmark inputs, never production thresholds or dispatch rules.
+            statistic_mask = np.zeros(data.shape, dtype=bool)
+            statistic_mask[size // 3 : size // 3 + 3, size // 2 : size // 2 + 3] = True
+            hard_mask = np.zeros(data.shape, dtype=bool)
+            hard_mask[size // 4 : size // 4 + 2, size // 3 : size // 3 + 2] = True
+            pipelines = [
+                ("polar", viz.azimuthal_normalize, {"nrad": nrad, "ntheta": 360}),
+                ("annular", viz.annular_normalize, {"radii": np.arange(0.5, nrad + 1)}),
+            ]
+            for label, function, geometry in pipelines:
+                options = dict(
+                    geometry,
+                    statistic="mode",
+                    sigma=(3, 3),
+                    maxiters=5,
+                    clip_center="median",
+                    clip_scale="mad_std",
+                    mask=hard_mask,
+                )
+                for masked in (False, True):
+                    call = partial(
+                        function,
+                        data,
+                        center,
+                        **options,
+                        statistic_mask=statistic_mask if masked else None,
+                    )
+                    with_profile = partial(call, return_profile=True)
+                    expected, profile = call(), with_profile()
+                    np.testing.assert_allclose(
+                        profile.image, expected, rtol=1e-10, atol=1e-10
+                    )
+                    np.testing.assert_array_equal(
+                        np.isfinite(profile.image), np.isfinite(expected)
+                    )
+                    before = measure(call, args.repeats)
+                    after = measure(with_profile, args.repeats)
+                    records.append(
+                        {
+                            "case": f"{label}_profile",
+                            "shape": [size, size],
+                            "statistic_mask": masked,
+                            "without_profile": before,
+                            "with_profile": after,
+                            "profile_time_ratio": after["median_seconds"]
+                            / before["median_seconds"],
+                        }
+                    )
     payload = {
         "baseline_ref": args.baseline_ref,
         "platform": platform.platform(),

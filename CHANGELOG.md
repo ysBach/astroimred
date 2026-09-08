@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- Radial normalizers returned only images; `return_profile=True` now adds
+  ring levels, spreads, coverage, and rejection counts.
+- Masks removed stars from the output; `statistic_mask` now excludes them
+  only from estimates (e.g., a `100` pixel divided by a masked mean of `2` stays `50`).
+- Mean/std used separate reductions and MAD clipping repeated medians;
+  reducers 0.4 now fuses mean/std and coordinate extrema, and unchanged
+  clipping statistics are reused.
+
 - Fix comet parameter validation: `subpixels=np.int8(12)` could overflow its squared denominator and reverse the result's sign; NumPy integer counts now match Python integers. Boolean kernel coefficients such as `a=True` previously acted as numbers; they now raise `ValueError` consistently with other scalar options.
 - Reuse radially variable filter stencils: `b=0` previously repeated an identical stencil 100 times with default sampling; it now evaluates once. Variable-width filtering reuses each pixel's stencil while its rounded width is unchanged, preserving mask and boundary behavior.
 - Expand ring statistics: `statistic="mode"` previously raised an error; it now uses the documented `3*median - 2*mean` estimate. Mean, median, mode, and custom callables support asymmetric sigma clipping, configurable iterations, and mean/median plus standard-deviation/MAD clipping choices.

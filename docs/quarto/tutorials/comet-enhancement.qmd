@@ -137,6 +137,23 @@ plt.show()
 Each panel has its own display limits. Compare feature locations and shapes,
 not brightness between panels or between different radii of a normalized image.
 
+Use `return_profile=True` when the radial estimates and their support matter.
+The result is an `EnhancementResult`: use `.image` for the enhanced array and
+`.profile` for a `RadialProfile`. The profile's `statistic` and `std` arrays
+are the retained-sample divisor/location and standard deviation (`ddof=1`),
+and `n_valid`/`n_used` report support before/after sigma clipping. `n_rejected`
+counts sigma rejections only. For polar methods, `n_samples` is `ntheta` per
+ring; for direct annuli it is the number of in-frame pixel centers, including
+hard-masked and nonfinite centers. `coverage` is `n_valid / n_samples` and is
+`NaN` for a bin with no in-frame samples. These are estimation diagnostics,
+not propagated measurement uncertainties.
+
+`statistic_mask` excludes pixels from estimates while retaining their original
+finite values in the output. The existing `mask` remains a hard mask: it
+excludes pixels from both estimates and output. In a polar call, a masked
+midpoint excludes the whole polar cell from the estimate, while the original
+sample can still contribute to reconstruction.
+
 ### Direct annular normalization
 
 Use `annular_normalize` when each original pixel should be divided by the
@@ -171,6 +188,34 @@ ax.set_xticks([])
 ax.set_yticks([])
 plt.show()
 ```
+
+For example, an estimate-only mask removes a bright pixel from the annular
+mean while leaving its transformed value visible. No plotting is needed to
+inspect the profile:
+
+```{python}
+toy = np.full((5, 5), 2.0)
+toy[2, 3] = 100.0
+estimate_mask = np.zeros_like(toy, dtype=bool)
+estimate_mask[2, 3] = True
+diagnostic = air.viz.annular_normalize(
+    toy,
+    (2, 2),
+    radii=[0, 3],
+    statistic="mean",
+    statistic_mask=estimate_mask,
+    return_profile=True,
+)
+assert diagnostic.image[2, 3] == 50.0
+assert diagnostic.profile.n_samples[0] == 25
+assert diagnostic.profile.n_valid[0] == 24
+assert diagnostic.profile.n_rejected[0] == 0
+```
+
+For direct annuli, `profile.radius` is the midpoint of each supplied edge
+pair and `profile.bin_edges` preserves those exact edges. Polar profiles use
+integer ring centers and have no `bin_edges`. Annular coverage is relative to
+in-frame centers, not to the area of a complete geometric annulus.
 
 ## 4. Handle masks and boundaries
 

@@ -7,6 +7,7 @@ from typing import Literal
 
 import numpy as np
 import numpy.typing as npt
+import reducers as rd
 
 from ._enhance_common import (
     _finite_positive,
@@ -15,9 +16,16 @@ from ._enhance_common import (
     _subpixel_offsets,
     _update_mean,
 )
+from ._enhance_profile import (
+    EnhancementResult,
+    RadialProfile,
+    _validate_profile_options,
+)
 from ._enhance_stats import _ring_statistics, _validate_statistics
 
 __all__ = [
+    "EnhancementResult",
+    "RadialProfile",
     "enhance_rho",
     "azimuthal_normalize",
     "azimuthal_renormalize",
@@ -36,14 +44,17 @@ def _polar_sample(
     nrad: int,
     ntheta: int,
     subpixels: int,
-) -> npt.NDArray[np.float64]:
+    statistic_mask: npt.NDArray[np.bool_] | None = None,
+) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]]:
     """Sample `data` into a ``(radius, angle)`` polar image.
 
     Each radius is an integer ring from 1 through `nrad`. Each angular bin
     has equal angular width. The midpoint grid uses `subpixels` samples in
     both radial and angular directions; a ring/angle sample is undefined if
     any one of its midpoint samples falls outside the image or on a missing
-    pixel.
+    pixel. Return the output samples and the estimation samples. An
+    estimation mask excludes a whole polar cell if any midpoint touches it;
+    output samples keep their original values.
     """
     offsets = _subpixel_offsets(subpixels)
     height, width = data.shape
@@ -52,6 +63,7 @@ def _polar_sample(
     theta_index = np.arange(ntheta, dtype=np.float64)
     total = np.zeros((nrad, ntheta), dtype=np.float64)
     valid = np.ones((nrad, ntheta), dtype=bool)
+    statistic_valid = None if statistic_mask is None else np.ones_like(valid)
 
     angles = [2.0 * np.pi * (theta_index + 0.5 + offset) / ntheta for offset in offsets]
     directions = [(np.sin(theta)[None, :], np.cos(theta)[None, :]) for theta in angles]
@@ -71,12 +83,17 @@ def _polar_sample(
             sampled = data[safe_y, safe_x]
             sample_valid = inside & np.isfinite(sampled)
             valid &= sample_valid
+            if statistic_valid is not None:
+                statistic_valid &= ~statistic_mask[safe_y, safe_x]
             sample_count += 1
             _update_mean(total, np.where(sample_valid, sampled, 0.0), sample_count)
 
     polar = np.full((nrad, ntheta), np.nan, dtype=np.float64)
     polar[valid] = total[valid]
-    return polar
+    estimates = (
+        polar if statistic_valid is None else np.where(statistic_valid, polar, np.nan)
+    )
+    return polar, estimates
 
 
 def _polar_reconstruct(
@@ -94,13 +111,15 @@ def _polar_reconstruct(
     absolute_x = np.abs(x_distances)
     absolute_y = np.abs(y_distances)
     # The Cartesian product of midpoint coordinates has separable extrema.
+    xmin, xmax = rd.minmax(absolute_x, axis=0)
+    ymin, ymax = rd.minmax(absolute_y, axis=0)
     nearest = np.hypot(
-        np.min(absolute_x, axis=0)[None, :],
-        np.min(absolute_y, axis=0)[:, None],
+        xmin[None, :],
+        ymin[:, None],
     )
     farthest = np.hypot(
-        np.max(absolute_x, axis=0)[None, :],
-        np.max(absolute_y, axis=0)[:, None],
+        xmax[None, :],
+        ymax[:, None],
     )
     yy, xx = np.nonzero(
         (nearest > 0.0)
@@ -197,7 +216,9 @@ def azimuthal_normalize(
     clip_scale: Literal["std", "mad_std"] = "std",
     subpixels: int = 10,
     mask: npt.ArrayLike | None = None,
-) -> npt.NDArray[np.float64]:
+    statistic_mask: npt.ArrayLike | None = None,
+    return_profile: bool = False,
+) -> npt.NDArray[np.float64] | EnhancementResult:
     """Divide polar rings by a mean, median, mode estimate, or custom statistic.
 
     Use `statistic="mode", sigma=3, maxiters=5` for a sigma-clipped mode
@@ -238,10 +259,18 @@ def azimuthal_normalize(
         default `10` preserves the source's 10-by-10 quadrature.
     mask : array-like or None, optional
         Additional exclusion mask with the image shape.
+    statistic_mask : array-like or None, optional
+        Exclude these pixels from ring estimates only. Original valid samples
+        remain in the output. A polar cell is excluded from estimation if
+        any midpoint touches this mask. The hard `mask` still excludes output.
+    return_profile : bool, optional
+        Return an `EnhancementResult` with `.image` and `.profile` when `True`.
+        The profile includes levels, sample standard deviations, and counts.
+        The default `False` returns only the image and avoids diagnostic work.
 
     Returns
     -------
-    ndarray
+    ndarray or EnhancementResult
         Float64 image with unchanged shape. The input is never modified.
         Zero divisors and incomplete sampling neighborhoods produce `NaN`.
         Negative finite divisors are retained.
@@ -268,8 +297,18 @@ def azimuthal_normalize(
     subpixels = _positive_integer(subpixels, "subpixels")
     options = _validate_statistics(statistic, sigma, maxiters, clip_center, clip_scale)
     data, center_value = _prepare_image(image, center, mask)
-    polar = _polar_sample(data, center_value, nrad, ntheta, subpixels)
-    scales, _ = _ring_statistics(polar, *options)
+    statistic_mask = _validate_profile_options(
+        statistic_mask, data.shape, return_profile
+    )
+    polar, estimates = _polar_sample(
+        data, center_value, nrad, ntheta, subpixels, statistic_mask
+    )
+    if return_profile:
+        scales, std, n_valid, n_used = _ring_statistics(
+            estimates, *options, return_std=True, return_counts=True
+        )
+    else:
+        scales, _ = _ring_statistics(estimates, *options)
     normalized = np.full_like(polar, np.nan)
     with np.errstate(over="ignore", invalid="ignore"):
         np.divide(
@@ -280,6 +319,19 @@ def azimuthal_normalize(
         )
     result = _polar_reconstruct(normalized, center_value, data.shape, subpixels)
     result[np.isnan(data)] = np.nan
+    if return_profile:
+        return EnhancementResult(
+            result,
+            RadialProfile(
+                radius=np.arange(1, nrad + 1, dtype=np.float64),
+                statistic=scales,
+                std=std,
+                n_samples=np.full(nrad, ntheta, dtype=np.intp),
+                n_valid=n_valid,
+                n_used=n_used,
+                sampling="polar",
+            ),
+        )
     return result
 
 
@@ -298,7 +350,9 @@ def azimuthal_renormalize(
     clip_scale: Literal["std", "mad_std"] = "std",
     subpixels: int = 10,
     mask: npt.ArrayLike | None = None,
-) -> npt.NDArray[np.float64]:
+    statistic_mask: npt.ArrayLike | None = None,
+    return_profile: bool = False,
+) -> npt.NDArray[np.float64] | EnhancementResult:
     """Map each ring's location plus/minus sample deviations to zero and one.
 
     Parameters
@@ -329,10 +383,17 @@ def azimuthal_renormalize(
         Midpoint samples per axis in polar sampling and reconstruction.
     mask : array-like or None, optional
         Additional exclusion mask with the image shape.
+    statistic_mask : array-like or None, optional
+        Exclude pixels from estimation only, preserving valid output samples.
+        A polar cell is excluded if any midpoint touches this mask.
+    return_profile : bool, optional
+        Return an `EnhancementResult` with `.image` and `.profile` when `True`.
+        Default `False` returns an image. Counts refer to polar cells, not
+        independent source pixels; see `RadialProfile`.
 
     Returns
     -------
-    ndarray
+    ndarray or EnhancementResult
         Float64 image of unchanged shape. Ring values follow
         ``0.5 + (value - location) / (2*nsigma*std)``, without clipping.
         Zero spread, missing neighborhoods, and uncovered radii yield `NaN`.
@@ -352,8 +413,18 @@ def azimuthal_renormalize(
     nsigma = _finite_positive(nsigma, "nsigma")
     options = _validate_statistics(statistic, sigma, maxiters, clip_center, clip_scale)
     data, center_value = _prepare_image(image, center, mask)
-    polar = _polar_sample(data, center_value, nrad, ntheta, subpixels)
-    location, std = _ring_statistics(polar, *options, return_std=True)
+    statistic_mask = _validate_profile_options(
+        statistic_mask, data.shape, return_profile
+    )
+    polar, estimates = _polar_sample(
+        data, center_value, nrad, ntheta, subpixels, statistic_mask
+    )
+    if return_profile:
+        location, std, n_valid, n_used = _ring_statistics(
+            estimates, *options, return_std=True, return_counts=True
+        )
+    else:
+        location, std = _ring_statistics(estimates, *options, return_std=True)
     normalized = np.full_like(polar, np.nan)
     usable = np.isfinite(location) & np.isfinite(std) & (std > 0)
     # Divide in stages so a representable result does not need a finite 2*std.
@@ -363,6 +434,19 @@ def azimuthal_renormalize(
         ] / nsigma + 0.5
     result = _polar_reconstruct(normalized, center_value, data.shape, subpixels)
     result[np.isnan(data)] = np.nan
+    if return_profile:
+        return EnhancementResult(
+            result,
+            RadialProfile(
+                radius=np.arange(1, nrad + 1, dtype=np.float64),
+                statistic=location,
+                std=std,
+                n_samples=np.full(nrad, ntheta, dtype=np.intp),
+                n_valid=n_valid,
+                n_used=n_used,
+                sampling="polar",
+            ),
+        )
     return result
 
 
@@ -378,7 +462,9 @@ def annular_normalize(
     clip_center: Literal["mean", "median"] = "mean",
     clip_scale: Literal["std", "mad_std"] = "std",
     mask: npt.ArrayLike | None = None,
-) -> npt.NDArray[np.float64]:
+    statistic_mask: npt.ArrayLike | None = None,
+    return_profile: bool = False,
+) -> npt.NDArray[np.float64] | EnhancementResult:
     """Divide original pixels by statistics in explicit radial intervals.
 
     Parameters
@@ -406,10 +492,18 @@ def annular_normalize(
         Sample deviation or Gaussian-consistent MAD used for clipping.
     mask : array-like or None, optional
         Additional exclusion mask with the image shape.
+    statistic_mask : array-like or None, optional
+        Exclude these pixels from each bin's estimate, while dividing their
+        original valid values by that estimate. The hard `mask` still
+        excludes pixels from both estimation and output.
+    return_profile : bool, optional
+        Return an `EnhancementResult` with `.image` and `.profile` when `True`.
+        Default `False` returns only the image. Coverage is relative to
+        in-frame pixel centers, not the area of a complete annulus.
 
     Returns
     -------
-    ndarray
+    ndarray or EnhancementResult
         Float64 image with unchanged shape. Missing pixels, pixels outside
         the radial intervals, and zero/nonfinite divisors produce `NaN`.
         The input is never modified.
@@ -444,9 +538,19 @@ def annular_normalize(
     if not np.all(np.isfinite(edges)) or edges[0] < 0 or np.any(np.diff(edges) <= 0):
         raise ValueError("radii must be finite, nonnegative, and strictly increasing")
     data, (cx, cy) = _prepare_image(image, center, mask)
+    statistic_mask = _validate_profile_options(
+        statistic_mask, data.shape, return_profile
+    )
     yy = np.arange(data.shape[0], dtype=np.float64)[:, None] - cy
     xx = np.arange(data.shape[1], dtype=np.float64)[None, :] - cx
     bins = np.searchsorted(edges, np.hypot(xx, yy), side="right") - 1
+    if return_profile:
+        nbins = edges.size - 1
+        profile_levels = np.full(nbins, np.nan)
+        profile_std = np.full(nbins, np.nan)
+        n_valid = np.zeros(nbins, dtype=np.intp)
+        n_used = np.zeros(nbins, dtype=np.intp)
+        n_samples = np.bincount(bins[(bins >= 0) & (bins < nbins)], minlength=nbins)
     selected = np.flatnonzero(np.isfinite(data) & (bins >= 0) & (bins < edges.size - 1))
     groups = bins.ravel()[selected]
     order = np.argsort(groups, kind="stable")
@@ -460,8 +564,35 @@ def annular_normalize(
             continue
         indices = selected[start:stop]
         values = flat_data[indices]
-        levels, _ = _ring_statistics(values[None, :], *options)
+        estimates = values
+        if statistic_mask is not None:
+            estimates = np.where(statistic_mask.ravel()[indices], np.nan, values)
+        if return_profile:
+            levels, std, valid, used = _ring_statistics(
+                estimates[None, :], *options, return_std=True, return_counts=True
+            )
+            bin_index = groups[start]
+            profile_levels[bin_index] = levels[0]
+            profile_std[bin_index] = std[0]
+            n_valid[bin_index] = valid[0]
+            n_used[bin_index] = used[0]
+        else:
+            levels, _ = _ring_statistics(estimates[None, :], *options)
         if np.isfinite(levels[0]) and levels[0] != 0:
             with np.errstate(over="ignore", invalid="ignore"):
                 result.ravel()[indices] = values / levels[0]
+    if return_profile:
+        return EnhancementResult(
+            result,
+            RadialProfile(
+                radius=edges[:-1] + np.diff(edges) / 2.0,
+                statistic=profile_levels,
+                std=profile_std,
+                n_samples=n_samples,
+                n_valid=n_valid,
+                n_used=n_used,
+                sampling="pixel_center",
+                bin_edges=edges.copy(),
+            ),
+        )
     return result
