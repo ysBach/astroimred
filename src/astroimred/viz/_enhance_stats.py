@@ -62,7 +62,7 @@ def _mean_std(
     if return_std:
         with np.errstate(over="ignore", invalid="ignore"):
             std = scale * rd.nanstd(centered, axis=1, ddof=1)
-        std[np.count_nonzero(np.isfinite(values), axis=1) == 1] = 0.0
+        std[rd.count_finite(values, axis=1) == 1] = 0.0
     return mean, std
 
 

@@ -91,14 +91,16 @@ def _polar_reconstruct(
     cx, cy = center
     x_distances = np.arange(shape[1])[None, :] + offsets[:, None] - cx
     y_distances = np.arange(shape[0])[None, :] + offsets[:, None] - cy
+    absolute_x = np.abs(x_distances)
+    absolute_y = np.abs(y_distances)
     # The Cartesian product of midpoint coordinates has separable extrema.
     nearest = np.hypot(
-        np.min(np.abs(x_distances), axis=0)[None, :],
-        np.min(np.abs(y_distances), axis=0)[:, None],
+        np.min(absolute_x, axis=0)[None, :],
+        np.min(absolute_y, axis=0)[:, None],
     )
     farthest = np.hypot(
-        np.max(np.abs(x_distances), axis=0)[None, :],
-        np.max(np.abs(y_distances), axis=0)[:, None],
+        np.max(absolute_x, axis=0)[None, :],
+        np.max(absolute_y, axis=0)[:, None],
     )
     yy, xx = np.nonzero(
         (nearest > 0.0)
