@@ -50,9 +50,11 @@ def circular_slice(shape, pos, radius, return_offset=False):
 # the circle. If it is 0, then it is the same as the current implementation. If
 # "center", astroapers/photutils-style pixel-center selection.
 def circular_bbox_cut(img, pos, radius, return_dists=False):
-    """
-    Any pixel that has a non-zero fraction within the circle OR touches the
-    circle are extracted.
+    """Extract the bounding cutout for a circle centered at `pos`.
+
+    Pixels with a nonzero area inside, or touching, the circle are included.
+    When `return_dists=True`, also return each cutout pixel's distance from the
+    center.
     """
     img = np.array(img)
     # position difference between the current position and cutout position
@@ -329,28 +331,27 @@ def center_sep(
     max_shift_step=1,
     full=False,
 ):
-    """Find the center of the object by SEP.
+    """Find an object's center by iterated SEP detection.
 
     Parameters
     ----------
     data : `~astropy.nddata.CCDData`, array-like
-        The data array.
+        Image data.
 
     position : array-like
-        The position of the initial guess in image XY coordinate (0-indexed).
+        Initial guess in zero-based image ``(x, y)`` coordinates.
 
     err, var : float or `~numpy.ndarray`, optional
-        Error or variance array. At most one can be given.
+        Error or variance array. Supply at most one.
 
     crad : float, optional
-        The radius of the circular cutout from data for center finding.
-        Approximately 2-4 times FWHM is recommended, but not too large so that
-        only one single object is contained in the cutout. Approximately
-        ``2*crad+1`` is the side length of the cutout array called **cbox**
-        (stands for "centering box", identical to bounding box). Default is ``3``.
+        Radius of the circular cutout. Use about 2–4 times the FWHM while
+        keeping only one object in the cutout. Its approximate side length is
+        ``2*crad+1``; this cutout is called the centering box (``cbox``).
+        Default is `3`.
 
     bkg : {'min', 'mean', 'median', float, array_like, sep.Background}, optional
-        The background estimation method within the cbox:
+        Background method within the cbox:
 
         * ``"min"``: use the minimum value of the data.
         * ``"mean"``: use the mean value of the data.
@@ -361,52 +362,49 @@ def center_sep(
         Default is ``"min"``.
 
     mask : `~numpy.ndarray`, optional
-        Boolean mask array. True values are masked.
+        Boolean mask; `True` values are masked.
 
     maskthresh : float, optional
-        Mask threshold. Pixels with mask values > maskthresh are masked.
-        Default is ``0.0``.
+        Mask threshold. Values above `maskthresh` are masked. Default is `0.0`.
 
     minarea : int, optional
-        Minimum number of pixels for detection. Default is ``5``.
+        Minimum detection area in pixels. Default is `5`.
 
     filter_kernel : `~numpy.ndarray` or None, optional
-        Filter kernel for object detection. Default is the SEP default kernel.
+        Object-detection filter kernel. Default is SEP's kernel.
 
     filter_type : {'matched', 'conv'}, optional
         Filter type. Default is ``"matched"``.
 
     deblend_nthresh : int, optional
-        Number of deblending thresholds. Default is ``32``.
+        Number of deblending thresholds. Default is `32`.
 
     deblend_cont : float, optional
-        Minimum contrast for deblending. Set to 1 to disable deblending.
-        Default is 1 (no deblending).
+        Minimum deblending contrast. Set to `1` to disable deblending. Default
+        is `1`.
 
     clean : bool, optional
-        Perform cleaning to remove spurious detections. Default is `False`.
+        Remove spurious detections. Default is `False`.
 
     clean_param : float, optional
-        Cleaning parameter. Default is ``1.0``.
+        Cleaning parameter. Default is `1.0`.
 
     maxiters : int, optional
-        Maximum number of iterations. Default is ``50``.
+        Maximum iterations. Default is `50`.
 
     tol_shift : float, optional
-        The absolute tolerance for the shift. If the shift in centroid after
-        iteration is smaller than this, iteration stops. Default is ``1e-3``.
+        Stop when the centroid shift is below this absolute tolerance. Default
+        is ``1e-3``.
 
     max_shift : float, optional
-        The maximum acceptable total shift. If shift is larger than this,
-        raises warning. Default is ``1``.
+        Warn when the total shift exceeds this value. Default is `1`.
 
     max_shift_step : float or None, optional
-        The maximum acceptable shift per iteration. If the shift exceeds this,
-        it will be truncated to this value in the same direction. If `None`,
-        no truncation is done. Default is ``1``.
+        Maximum shift per iteration. Larger shifts are truncated in the same
+        direction. If `None`, do not truncate. Default is `1`.
 
     full : bool, optional
-        If `True`, return additional information. Default is `False`.
+        Return the shift and SEP histories when `True`. Default is `False`.
 
     Returns
     -------
@@ -430,9 +428,8 @@ def center_sep(
 
     Notes
     -----
-    Uses the SEP library (Source Extractor Python) for object detection.
-    The algorithm iteratively finds the centroid of the brightest object
-    in the cutout region until convergence or max iterations reached.
+    Uses SEP (Source Extractor Python) to detect the brightest object in the
+    cutout and iterates until convergence or `maxiters` is reached.
     """
     pos = np.array(position)
     positions = [pos]
@@ -535,50 +532,45 @@ def _centroiding_iteration(
     msky=None,
     error=0,
 ):
-    """Find the intensity-weighted centroid of the image iteratively
+    """Run one intensity-weighted centroiding iteration.
 
-    Returns
-    -------
+    Parameters
+    ----------
     ccd : `~astropy.nddata.CCDData`
-        The full CCD image.
+        Full CCD image.
 
-    position_xy : float
-        The position of the initial guess in image XY coordinate. It is assumed
-        that the `position_xy` is already quite close to the centroid, so both
-        `msky` and `error`(if constant) are not needed to be updated at every
-        iteration.
+    position_xy : array-like
+        Initial position in image ``(x, y)`` coordinates. It should already be
+        close to the centroid, so `msky` and a constant `error` need not be
+        updated on every iteration.
+
+    centroider : callable, optional
+        Function used to estimate the centroid from the cutout. Default is
+        `centroid_com`.
 
     cbox_size : float or int, optional
-        The size of the box to find the centroid. Recommended to use 2.5 to 4.0
-        times the seeing FWHM. Minimally about 5 pixel is recommended. If
-        extended source (e.g., comet), recommend larger cbox.
+        Centroiding box size. Use about 2.5–4.0 times the seeing FWHM and at
+        least 5 pixels; use a larger box for extended sources such as comets.
         See:
         https://iraf.readthedocs.io/en/latest/tasks/noao/digiphot/apphot/centerpars.html
 
     csigma : float or int, optional
-        The parameter to use in sigma-clipping. If `None`, pixels ABOVE (not
-        equal to) the minimum pixel value within the `cbox_size` will be used.
-        If `0` (actually if < 1.e-6), pixels ABOVE the "mean pixel value within
-        the `cbox_size`" will be used (IRAF default?). Otherwise, pixels above
-        ``msky + csigma*error`` will be used.
-        Default is 0
+        Sigma threshold. If `None`, use pixels above (not equal to) the box
+        minimum. If `0` (more generally, below ``1.e-6``), use pixels above the
+        box mean.
+        Otherwise use pixels above ``msky + csigma * error``. Default is `0`.
 
     msky : float, optional
-        The approximate value of the sky or background. If `None` (default),
-        it is the minimum pixel value within the `cbox_size`.
+        Approximate sky or background. If `None` (default), use the box minimum.
 
     error : float, ndarray, optional
-        The 1-sigma error-bar for each pixel. If float, a constant error-bar
-        (e.g., sample standard deviation of sky) is assumed. If array-like, it
-        should be in the shape of ccd. Ignored if `csigma` is
-        `None` or `0`.
-        Default is ``0``.
+        Per-pixel 1-sigma error. A scalar gives a constant error (for example,
+        the sky's sample deviation); an array must match `ccd`. Ignored when
+        `csigma` is `None` or `0`. Default is `0`.
 
-    max_shift_step : float, None, optional
-        The maximum acceptable shift for each iteration. If the shift (call it
-        ``shift_raw``) is larger than this, the actual shift will be
-        `max_shift_step` towards the direction identical to `shift_raw`. If
-        `None` (default), no such truncation is done.
+    max_shift_step : float or None, optional
+        Maximum shift per iteration. Larger shifts are truncated in the same
+        direction. If `None` (default), do not truncate.
 
     Returns
     -------

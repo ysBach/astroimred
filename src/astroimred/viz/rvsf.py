@@ -39,11 +39,12 @@ def _accumulate_step(
     width: int,
     scale: float,
 ) -> None:
-    """Accumulate one subpixel's stencil, reusing unchanged rounded widths.
+    """Accumulate one midpoint stencil and reuse unchanged integer widths.
 
-    The stencil depends on a pixel's integer width only. Cache the previous
-    stencil for each pixel so midpoint samples with the same rounded width
-    avoid repeating the eight neighbor gathers.
+    A pixel's stencil depends only on its rounded integer width. The previous
+    width and stencil are cached per pixel, so a repeated width skips the
+    eight neighbor gathers. Pixels with an invalid center, neighbor, or image
+    boundary remain invalid for later midpoint samples.
     """
     data_flat = data.ravel()
     steps_flat = steps.ravel()
@@ -96,33 +97,33 @@ def radially_variable_filter(
     subpixels: int = 10,
     mask: npt.ArrayLike | None = None,
 ) -> npt.NDArray[np.float64]:
-    """Apply the CometCIEF radially variable eight-neighbor filter.
+    """Apply CometCIEF's radially variable eight-neighbor filter.
 
-    Choose `a`, `b`, and `n` for the feature sizes in your image. The kernel
-    half-width in pixels is ``a + b * rho**n``. Larger widths reveal broader
-    structure. The input is never modified.
+    The kernel half-width at radius ``rho`` is ``a + b * rho**n`` pixels.
+    Larger widths reveal broader structure. The input is never modified.
 
     Parameters
     ----------
-    image : array-like
-        Nonempty, real 2-D image. Masked-array masks and nonfinite pixels
-        are excluded. Pass CCDData pixels and its mask separately.
+    image : array-like, shape (height, width)
+        Nonempty, real 2-D image. Masked-array masks and nonfinite pixels are
+        excluded. Pass CCDData pixels and its mask separately.
     center : tuple of float
         Zero-based ``(x, y)`` nucleus coordinates within the image. Fractional
         positions are supported. Subtract one from CometCIEF coordinates.
     a, b : float
         Finite, nonnegative kernel coefficients. `a` sets the central
-        half-width; `b` controls its growth with radius.
+        half-width and `b` controls growth with radius.
     n : float
-        Finite, positive radial exponent. Select explicitly for your image.
+        Finite, positive radial exponent. Choose it for the image structure.
     log : bool, optional
         Apply ``log10(image)`` before filtering. Every unmasked finite pixel
         must be positive; otherwise raise `ValueError`.
     subpixels : int, optional
         Midpoint samples per pixel axis. The default `10` reproduces the
         source's 10-by-10 width sampling. Use `1` for pixel-center sampling.
-    mask : array-like of bool or None, optional
-        Additional exclusion mask with the same shape as `image`.
+    mask : array-like or None, optional
+        Additional boolean-convertible exclusion mask with the same shape as
+        `image`.
 
     Returns
     -------
@@ -133,18 +134,18 @@ def radially_variable_filter(
 
     Notes
     -----
-    At each subpixel, round the kernel half-width to the nearest pixel
-    (half-integers round up), sample four axial and four diagonal neighbors,
-    and evaluate ``1024*I - 192*sum(axial) - 64*sum(diagonal)``. Average these
-    filter values across the pixel. The coefficients sum to zero, so a
-    constant image gives zero wherever the stencil is valid.
+    For every midpoint, the half-width is rounded to the nearest pixel;
+    half-integers round up. Four axial and four diagonal neighbors then give
+    ``1024*I - 192*sum(axial) - 64*sum(diagonal)``. The filter values are
+    averaged over the pixel. The coefficients sum to zero, so a constant
+    image gives zero wherever the stencil is valid.
 
     All eight neighbors contribute even when the width rounds to zero.
     This preserves the zero response for constant images at small widths;
     the legacy Fortran code instead drops collapsed axial neighbors.
     Missing neighbors produce `NaN` rather than artificial bright borders.
 
-    This filter changes intensities and can produce negative lobes around
+    The filter changes intensities and can produce negative lobes around
     stars and jets. Use the original calibrated image for photometry.
 
     References

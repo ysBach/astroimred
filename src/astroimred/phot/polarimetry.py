@@ -1,14 +1,14 @@
-"""
-Currently only the half-wave plate angle (HWP angle) of 0, 22.5, 45,
-67.5 combination is available.
+"""Polarimetry calculators and corrections.
 
-Primitive naming: ``<lin/circ/all>_<oe/sr>_<n>set``
+Currently only the half-wave plate angle (HWP) set ``0, 22.5, 45, 67.5``
+is available.
 
-    - lin/circ/all: linear, circular, or all Stoke's parameter will be
-      determined.
-    - oe/sr: o- and e-ray (e.g., Wollaston or Savart prism is used) or
-      single-ray version
-    - n: the number of HWP angles used. 3 or 4.
+Primitive names follow ``<lin/circ/all>_<oe/sr>_<n>set``:
+
+* ``lin/circ/all``: determine linear, circular, or all Stokes parameters.
+* ``oe/sr``: ordinary/extraordinary-ray (for example, a Wollaston or Savart
+  prism) or single-ray version.
+* ``n``: number of HWP angles, `3` or `4`.
 """
 
 import numpy as np

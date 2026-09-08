@@ -1,4 +1,4 @@
-"""Store normalization statistics alongside an enhanced image."""
+"""Store the image and statistics produced by a normalization pass."""
 
 from dataclasses import dataclass
 from typing import Literal
@@ -9,34 +9,36 @@ import numpy.typing as npt
 
 @dataclass(frozen=True)
 class NormStats:
-    """Normalization statistics and sample support for each radial bin.
+    """Describe normalization estimates and support for each radial bin.
 
-    Records values from the enhancement pass; performs no estimation.
+    This record stores values from one enhancement pass; it performs no
+    estimation. Its estimate and count arrays are one-dimensional, with one
+    entry per polar ring or direct annular bin.
 
     Attributes
     ----------
-    radius : ndarray
+    radius : ndarray, shape (n_bins,)
         Integer ring radii for polar sampling, or bin-edge midpoints for
         direct annuli, in pixels.
-    statistic : ndarray
+    statistic : ndarray, shape (n_bins,)
         Retained-sample divisor or location, before image transformation.
         Zero/negative values are reported even if unsuitable for division.
-    std : ndarray
+    std : ndarray, shape (n_bins,)
         Retained sample standard deviation (``ddof=1``), regardless of the
         clipping scale. One sample has zero spread; empty bins have `NaN`.
-    n_samples : ndarray
+    n_samples : ndarray, shape (n_bins,)
         Total sampling opportunities. Polar rings have `ntheta` angular
         cells. Direct annuli count all in-frame pixel centers in each bin,
         including masked/nonfinite pixels; off-image area is not counted.
-    n_valid : ndarray
+    n_valid : ndarray, shape (n_bins,)
         Finite samples after both masks, before sigma clipping.
-    n_used : ndarray
+    n_used : ndarray, shape (n_bins,)
         Samples retained after clipping. A callable may use these samples
         internally in its own way; that does not change this count.
     sampling : {"polar", "pixel_center"}
         Whether counts refer to polar cells or original pixel centers.
-    bin_edges : ndarray or None
-        Direct annular edges in pixels. `None` for integer polar rings.
+    bin_edges : ndarray, shape (n_bins + 1,) or None
+        Exact direct-annulus edges in pixels. `None` for integer polar rings.
 
     Notes
     -----
@@ -44,10 +46,10 @@ class NormStats:
     estimation support, not valid output pixels. In polar sampling, repeated
     lookups of one source pixel are not independent measurements.
 
-    Arrays belong to the result and can be edited without changing the input
-    image. Only `n_valid` and `n_used` exclude hard and estimation masks;
-    `n_samples` counts opportunities before masking. `n_rejected` counts
-    sigma rejections only.
+    The arrays belong to the result and can be edited without changing the
+    input image. Only `n_valid` and `n_used` exclude hard and estimation
+    masks; `n_samples` counts opportunities before masking. `n_rejected`
+    counts sigma rejections only.
 
     Use `astroimred.phot.radprof.radial_profile` to calculate a standalone
     annular profile with `sky_fit` options. Matching statistics require
@@ -88,12 +90,13 @@ class NormStats:
 
 @dataclass(frozen=True)
 class EnhancementResult:
-    """Access an enhanced image and its normalization statistics.
+    """Return an enhanced image with its normalization statistics.
 
     Attributes
     ----------
-    image : ndarray
-        Float64 enhanced image, as returned with ``return_stats=False``.
+    image : ndarray, shape (height, width)
+        Float64 enhanced image, identical to the array returned with
+        ``return_stats=False``.
     stats : NormStats
         Radial estimates, spreads, and sample counts. These are visualization
         diagnostics, not propagated measurement uncertainties.

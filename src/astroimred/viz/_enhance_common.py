@@ -106,7 +106,8 @@ def _subpixel_offsets(subpixels: int) -> npt.NDArray[np.float64]:
     Returns
     -------
     ndarray
-        Offsets from the pixel center, from ``-0.5`` to ``0.5``.
+        Offsets from the pixel center, strictly between ``-0.5`` and
+        ``0.5``.
 
     Raises
     ------

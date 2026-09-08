@@ -56,40 +56,33 @@ def _parse_data_header(
     parse_header: bool = True,
     copy: bool = True,
 ):
-    """Parse data and header from a CCD-like object, array, header, or path.
+    """Parse data and/or a header from an image-like input.
 
     Parameters
-    ---------
-    ccdlike : `~astropy.nddata.CCDData`, `~astropy.io.fits.PrimaryHDU`, `~astropy.io.fits.ImageHDU`, `~astropy.io.fits.HDUList`, `~astropy.io.fits.Header`, `~numpy.ndarray`, number-like, path-like, `None`
-        The object to be parsed into data and header.
-
-    extension : `int`, `str`, (`str`, `int`), optional.
-        The extension of FITS to be used. It can be given as integer
-        (0-indexing) of the extension, ``EXTNAME`` (single `str`), or a `tuple` of
-        `str` and `int`: ``(EXTNAME, EXTVER)``. If `None` (default), the *first
-        extension with data* will be used.
-
+    ----------
+    ccdlike : `~astropy.nddata.CCDData`, `~astropy.io.fits.PrimaryHDU`, `~astropy.io.fits.ImageHDU`, `~astropy.io.fits.HDUList`, `~astropy.io.fits.Header`, `~numpy.ndarray`, number-like, path-like, or `None`
+        Input object. ``None`` and an empty string return ``(None, None)``.
+    extension : `int`, `str`, or (`str`, `int`), optional
+        FITS extension: a zero-based index, an ``EXTNAME`` string, or an
+        ``(EXTNAME, EXTVER)`` tuple. ``None`` selects the first extension with data.
     parse_data, parse_header : `bool`, optional
-        Because this function uses ``.copy()`` for safety, it may take a bit of
-        time if this function is used iteratively. One then can turn off one of
-        these to ignore either data or header part.
-        Default: `True`.
+        Select which parts to return. Both default to ``True``.
+    copy : `bool`, optional
+        Whether to copy returned data and headers. Set to ``False`` only when
+        references to the input objects are intentional. Default: ``True``.
 
     Returns
     -------
-    data : `~numpy.ndarray`, `None`
-        The data part of the input `ccdlike`. If `ccdlike` is ``''`` or `None`,
-        `None` is returned.
-
-    hdr : `~astropy.io.fits.Header`, `None`
-        The header if header exists; otherwise, `None` is returned.
+    data : `~numpy.ndarray`, scalar, or `None`
+        Parsed data, or ``None`` when ``parse_data=False`` or the input has no data.
+    hdr : `~astropy.io.fits.Header` or `None`
+        Parsed header, or ``None`` when ``parse_header=False`` or no header exists.
 
     Notes
     -----
-    _parse_data_header and _parse_image have different purposes:
-    _parse_data_header is to get a quick copy of the data and/or header,
-    especially to CHECK if it has header, while _parse_image is to deal mainly
-    with the data (and has options to return as `~astropy.nddata.CCDData`).
+    Use ``_parse_data_header`` for a quick data/header copy or header check. Use
+    ``_parse_image`` when normalizing image data or requesting
+    `~astropy.nddata.CCDData`.
     """
     if ccdlike is None or (isinstance(ccdlike, str) and ccdlike == ""):
         data = None
@@ -192,44 +185,44 @@ def _parse_image(
 
     Parameters
     ----------
-    ccdlike : `~astropy.nddata.CCDData`-like (e.g., `~astropy.io.fits.PrimaryHDU`, `~astropy.io.fits.ImageHDU`, `~astropy.io.fits.HDUList`), `~numpy.ndarray`, path-like, or number-like
-        The "image" that will be parsed. A string that can be converted to
-        `float` (``float(ccdlike)``) will be interpreted as numbers; if not, it will
-        be interpreted as a path to the FITS file.
-
-    extension : `int`, `str`, (`str`, `int`), optional.
-        The extension of FITS to be used. It can be given as integer
-        (0-indexing) of the extension, ``EXTNAME`` (single `str`), or a `tuple` of
-        `str` and `int`: ``(EXTNAME, EXTVER)``. If `None` (default), the *first
-        extension with data* will be used.
-        Default: `None`.
-
+    ccdlike : `~astropy.nddata.CCDData`-like, `~numpy.ndarray`, path-like, or number-like
+        The image to parse. A value accepted by ``float(ccdlike)`` is treated as a
+        scalar; other path-like values are read as FITS files.
+    extension : `int`, `str`, or (`str`, `int`), optional
+        FITS extension: a zero-based index, an ``EXTNAME`` string, or an
+        ``(EXTNAME, EXTVER)`` tuple. ``None`` selects the first extension with data.
+        Default: ``None``.
+    name : `str`, optional
+        Name used in the returned ``imname`` and in log messages. If omitted, a
+        descriptive name is generated from the input. Default: ``None``.
     force_ccddata, prefer_ccddata : `bool`, optional
-        `force_ccddata` forces return as `~astropy.nddata.CCDData`. This is
-        useful when error calculation is turned on.
-        `prefer_ccddata` returns `~astropy.nddata.CCDData` only if `ccdlike` was
-        `~astropy.nddata.CCDData`,
-        HDU object, or `~pathlib.Path`-like to a FITS file, but **not** if it was `~numpy.ndarray`
-        or numbers.
-        Default: `False`.
+        ``force_ccddata=True`` always returns `~astropy.nddata.CCDData`, which is
+        useful when metadata or error propagation is needed. With
+        ``prefer_ccddata=True``, CCDData/HDU/path inputs return CCDData while arrays
+        and numbers remain arrays. Both default to ``False``.
+    copy : `bool`, optional
+        Whether to copy array, header, and CCDData inputs. Default: ``True``.
 
     Returns
     -------
     new_im : `~numpy.ndarray` or `~astropy.nddata.CCDData`
-        Depending on the options `force_ccddata` and `prefer_ccddata`.
-
+        Parsed image, selected by ``force_ccddata`` and ``prefer_ccddata``.
     imname : `str`
-        The name of the image.
-
+        The supplied or generated image name.
     imtype : `str`
-        The type of the image.
+        Input category: ``"CCDData"``, ``"hdu"``, ``"HDUList"``, ``"ndarray"``,
+        ``"num"``, or ``"path"``.
 
     Notes
     -----
-    _parse_data_header and _parse_image have different purposes:
-    _parse_data_header is to get a quick copy of the data and/or header,
-    especially to CHECK if it has header, while _parse_image is to deal mainly
-    with the data (and has options to return as `~astropy.nddata.CCDData`).
+    ``_parse_data_header`` is the quick data/header helper. Reading a path with
+    ``force_ccddata=True`` is slower because Astropy parses its metadata; use an
+    array or ``force_ccddata=False`` when metadata is unnecessary.
+
+    Historical timing records
+    -------------------------
+    These measurements are retained for comparison only; they are not performance
+    contracts.
 
     Timing on MBP 14" [2021, macOS 12.2.1, M1Pro(6P+2E/G16c/N16c/32G)]:
 
@@ -681,87 +674,58 @@ def load_ccd(
     memmap: bool = False,
     **kwd,
 ) -> CCDData | np.ndarray | tuple[object, ...]:
-    """Load CCD-like image data from a FITS file.
+    """Load one FITS image, with optional uncertainty and mask extensions.
 
     Parameters
-    ---------
+    ----------
     path : path-like
-        The path to the FITS file to load.
-
-    trimsec : `str`, optional.
-        Region of `~astropy.nddata.CCDData` from which the data is extracted.
-        Default: `None`.
-
-    extension : `int`, `str`, (`str`, `int`), optional.
-        The extension of FITS to be used. It can be given as integer
-        (0-indexing) of the extension, ``EXTNAME`` (single `str`), or a `tuple` of
-        `str` and `int`: ``(EXTNAME, EXTVER)``. If `None` (default), the *first
-        extension with data* will be used.
-        Default: `None`.
-
-    ccddata : `bool`, optional.
-        Whether to return `~astropy.nddata.CCDData`. Default is `True`. If it
-        is `False`, **all the arguments below are ignored**, except for the
-        keyword arguments that will be passed to `fitsio.read`, and an `~numpy.ndarray`
-        will be returned without astropy unit.
-
-    use_wcs : `bool`, optional.
-        Whether to load `~astropy.wcs.WCS` by `fits.getheader`, **not** by
-        `~astropy.nddata.fits_ccdddata_reader`. This is necessary as of now
-        because TPV `~astropy.wcs.WCS` is not properly understood by the latter. It can
-        degrade the performance, so if the user is sure the file is **not** in
-        TPV, it is recommended to set it to `False`.
-        Default : `True`.
-        Used only if ``ccddata=True``.
-
+        FITS file to load.
+    extension : `int`, `str`, or (`str`, `int`), optional
+        FITS extension: a zero-based index, an ``EXTNAME`` string, or an
+        ``(EXTNAME, EXTVER)`` tuple. ``None`` selects the first extension with data.
+        Default: ``None``.
+    trimsec : `str`, optional
+        FITS-style section to apply after loading the selected image. Default:
+        ``None``.
+    ccddata : `bool`, optional
+        Return `~astropy.nddata.CCDData` when ``True`` (default). When ``False``,
+        return only the image array unless ``full=True``.
+    use_wcs : `bool`, optional
+        Build the WCS with `~astropy.io.fits.getheader` instead of Astropy's CCDData
+        reader. This keeps TPV WCS usable but can be slower. Used only for the
+        Astropy/CCDData path. Default: ``True``.
     unit : `~astropy.units.Unit`, optional
-        Units of the image data. If this argument is provided and there is a
-        unit for the image in the FITS header (the keyword ``BUNIT`` is used as
-        the unit, if present), this argument is used for the unit.
-        Default: `None`.
-        Used only if ``ccddata=True``.
-
-    full : `bool`, optional.
-        Whether to return full `(data, unc, mask, flag)` when using
-        `fitsio` (i.e., when ``ccddata=False``). If `False` (default), only `data`
-        will be returned.
-        Default: `False`.
-
-    extension_uncertainty : `str` or `None`, optional
-        FITS extension from which the uncertainty should be initialized. If the
-        extension does not exist the uncertainty is `None`. Name is changed
-        from `hdu_uncertainty` in ccdproc to `extension_uncertainty` here. See
-        explanation of `extension`.
-        Default: ``'UNCERT'``.
-
-    extension_mask : `str` or `None`, optional
-        FITS extension from which the mask should be initialized. If the
-        extension does not exist the mask is `None`. Name is changed from
-        `hdu_mask` in ccdproc to `extension_mask` here.  See explanation of
-        `extension`.
-        Default: ``'MASK'``.
-
-    extension_flags : `str` or `None`, optional
-        Currently not implemented. Name is changed from `hdu_flags` in ccdproc
-        to `extension_flags` here.
-        Default: `None`.
-
+        Override the image unit. If omitted, ``BUNIT`` is used when present;
+        otherwise Astropy falls back to ADU. Used for CCDData loading only.
+    full : `bool`, optional
+        Return ``(data, unc, mask, flag)`` for raw loading, or
+        ``(ccd, uncertainty, mask, flags)`` when ``ccddata=True``. Missing
+        extensions produce ``None``. Default: ``False``.
+    extension_uncertainty, extension_mask, extension_flags : extension selector or `None`, optional
+        Extensions used to initialize the corresponding CCDData components or raw
+        arrays. Defaults are ``"UNCERT"``, ``"MASK"``, and ``None``. Flags are not
+        supported by Astropy's CCDData reader.
     key_uncertainty_type : `str`, optional
-        The header key name where the class name of the uncertainty is stored
-        in the hdu of the uncertainty (if any).
-        Default: ``UTYPE``.
-        Used only if ``ccddata=True``.
-
+        Header key naming the uncertainty class. Used only for CCDData loading.
+        Default: ``"UTYPE"``.
     memmap : `bool`, optional
-        Is memory mapping to be used? This value is obtained from the
-        configuration item `astropy.io.fits.Conf.use_memmap`.
-        Default: `False` (**opposite of astropy**).
-        Used only if ``ccddata=True``.
+        Whether Astropy should memory-map FITS data. Default: ``False`` (the
+        opposite of Astropy's default configuration).
+    **kwd
+        Additional keywords passed to `~astropy.nddata.CCDData.read` in the Astropy
+        path. They are ignored by the direct `fitsio` path used when
+        ``ccddata=False`` and `fitsio` is installed.
 
-    kwd :
-        Any additional keyword parameters that will be used in
-        `~astropy.nddata.fits_ccddata_reader` (if ``ccddata=True``) or
-        `fitsio.read()` (if ``ccddata=False``).
+    Returns
+    -------
+    `~astropy.nddata.CCDData`, `~numpy.ndarray`, or tuple
+        The selected image, or the full tuple requested by ``full``.
+
+    Notes
+    -----
+    When `fitsio` is installed and ``ccddata=False``, the direct reader uses
+    ``extension``, ``trimsec``, ``full``, and the three extension selectors; WCS,
+    unit, uncertainty-class, and memory-map options do not apply in that branch.
     """
     try:
         path = Path(path)
@@ -836,16 +800,29 @@ def load_ccds(
     memmap: bool = False,
     **kwd,
 ) -> list:
-    """Load multiple FITS files with `load_ccd`.
+    """Load multiple FITS files with ``load_ccd``.
 
     Parameters
-    ---------
-    paths : [`list` of] path-like
-        The path, glob pattern, or `list` of such, e.g., ``"a.fits"``,
-        ``"c*.fits"``, ``["a.fits", "c*.fits"]``
+    ----------
+    paths : path-like or sequence of path-like
+        A file path, glob pattern, or sequence of paths and glob patterns.
+    extension, trimsec, ccddata, use_wcs, unit, extension_uncertainty,
+    extension_mask, extension_flags, full, key_uncertainty_type, memmap
+        Passed unchanged to ``load_ccd`` for every resolved path.
+    **kwd
+        Additional keywords passed to ``load_ccd``.
 
-    Notes
-    -----
+    Returns
+    -------
+    list
+        One result from ``load_ccd`` per resolved path. Paths are expanded and
+        sorted by ``inputs2list`` before loading.
+
+    Historical timing records
+    -------------------------
+    These measurements are retained for comparison only; they are not performance
+    contracts.
+
     Timing on MBP 14" [2021, macOS 12.2, M1Pro(6P+2E/G16c/N16c/32G)] using 10
     FITS (each 4.3 MB) with ~ 100 header cards:
 
@@ -937,35 +914,37 @@ def inputs2list(
     path_to_text: bool = False,
     check_coherency: bool = False,
 ) -> list | None:
-    """Convert paths, globs, tables, or CCD-like objects to a list.
+    """Normalize file, table, and CCD-like inputs to a list.
 
     Parameters
     ----------
-    inputs : `str`, path-like, CCD-like, or table-like
-        If `~pandas.DataFrame`-convertible, e.g., `dict`, `~pandas.DataFrame` or
-        `~astropy.table.Table`, it must have column named ``"file"``, such that
-        ``list(inputs["file"])`` is possible. Otherwise, please use,
-        e.g., ``inputs = list(that_table["filenamecolumn"])``. If a `str` starts
-        with ``"@"`` (e.g., ``"@darks.list"``), it assumes the file contains a
-        list of paths separated by ``"\\n"``, as in IRAF.
-
-    sort : `bool`, optional.
-        Whether to sort the output `list`.
-        Default: `True`.
-
+    inputs : `str`, path-like, CCD-like, table-like, or sequence
+        A glob pattern, path, sequence of paths/CCD-like objects, or a table-like
+        object with a ``"file"`` column. A string beginning with ``"@"`` is read as
+        a newline-separated IRAF-style list file.
+    sort : `bool`, optional
+        Sort path results. Default: ``True``.
     accept_ccdlike : `bool`, optional
-        Whether to accept `~astropy.nddata.CCDData`-like objects and simply
-        return ``[inputs]``.
-        Default: `True`.
-
+        Accept a CCD-like object as a single-item list. If ``False``, such input
+        raises `TypeError`. Default: ``True``.
     path_to_text : `bool`, optional
-        Whether to convert the `pathlib.Path` object to `str`.
-        Default: `False`.
-
+        Convert path-like entries in a sequence to strings instead of `Path`
+        objects. Default: ``False``.
     check_coherency : `bool`, optional
-        Whether to check if all elements of the `inputs` have the identical
-        type.
-        Default: `False`.
+        Require every item in a sequence to have the type of the first item.
+        Default: ``False``.
+
+    Returns
+    -------
+    list or `None`
+        Normalized inputs, or ``None`` when ``inputs`` is ``None``.
+
+    Raises
+    ------
+    KeyError
+        A table-like input has no ``"file"`` column.
+    TypeError
+        A CCD-like object is rejected or an unsupported input type is given.
     """
     contains_ccdlike = False
     if inputs is None:

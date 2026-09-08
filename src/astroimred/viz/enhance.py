@@ -1,4 +1,4 @@
-"""Comet image enhancement helpers."""
+"""Enhance comet images with radial, polar, and annular filters."""
 
 from __future__ import annotations
 
@@ -157,34 +157,34 @@ def enhance_rho(
     subpixels: int = 10,
     mask: npt.ArrayLike | None = None,
 ) -> npt.NDArray[np.float64]:
-    """Multiply image values by their subpixel-averaged radius.
+    """Multiply each image pixel by its subpixel-averaged radius.
 
     Parameters
     ----------
-    image : array-like
-        A nonempty, real, two-dimensional image. Nonfinite and masked pixels
+    image : array-like, shape (height, width)
+        Nonempty, real, two-dimensional image. Nonfinite and masked pixels
         are treated as missing.
     center : tuple of float
-        Zero-based ``(x, y)`` nucleus coordinates within the image.
+        Zero-based ``(x, y)`` nucleus coordinates within the image. Fractional
+        positions are supported.
     subpixels : int, optional
         Midpoint samples per pixel axis. The default `10` follows the
-        CometCIEF source's 10-by-10 radius quadrature. Use `1` for center
-        sampling.
-    mask : array-like, optional
-        Additional pixels to treat as missing. Values are converted to
-        `bool`.
+        CometCIEF source's 10-by-10 radius quadrature; `1` uses pixel centers.
+    mask : array-like or None, optional
+        Additional boolean-convertible mask with the same shape as `image`.
 
     Returns
     -------
-    ndarray
-        A float64 image with the same shape as `image`. The input is never
-        modified, and missing input pixels remain `NaN`.
+    ndarray, shape (height, width)
+        Float64 image. The input is never modified, and missing input pixels
+        remain NaN.
 
     Notes
     -----
-    The source routine first rescales the whole image to mean 100. This API
-    omits that presentation-only rescaling so the operation is a direct
-    radius multiplication and remains composable with calibrated data.
+    This is a direct radius multiplication. The source routine first rescales
+    the whole image to mean 100; this API omits that presentation-only step so
+    calibrated data remains composable. No clipping or uncertainty propagation
+    is applied.
     """
     data, (cx, cy) = _prepare_image(image, center, mask)
     offsets = _subpixel_offsets(subpixels)

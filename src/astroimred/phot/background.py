@@ -64,26 +64,24 @@ def quick_sky_circ(
     mask: np.ndarray | None = None,
     **kwargs,
 ) -> Table:
-    """Estimate sky with crude presets.
+    """Estimate sky in a circular annulus using quick presets.
 
     Parameters
     ----------
-    ccd: `~astropy.nddata.CCDData`, astropy HDU-like, ndarray-like
-        The image data to extract sky at given annulus.
+    ccd : `~astropy.nddata.CCDData` or ndarray-like
+        Image data from which to extract annular sky values.
 
-    pos: tuple of float
-        The (x, y) position of the center of the annulus.
+    pos : tuple of float
+        Annulus center in ``(x, y)`` order.
 
-    r_in, r_out: float, optional
-        The inner and outer radius of the annulus in pixel.
-        Default is ``10``, ``20``.
+    r_in, r_out : float, optional
+        Inner and outer annulus radii in pixels. Defaults are `10` and `20`.
 
-    mask: None or array_like, optional
-        A boolean mask with the same shape as `ccd`. The pixels with True
-        values will be masked.
+    mask : array-like or None, optional
+        Boolean mask with the same shape as `ccd`; `True` pixels are excluded.
 
-    kwargs : dict, optional
-        The keyword arguments for `sky_fit`.
+    **kwargs :
+        Keyword arguments forwarded to `sky_fit`.
     """
     annulus = aap.CircAn(pos, r_in=r_in, r_out=r_out)
     return sky_fit(ccd, annulus, mask=mask, **kwargs)
@@ -100,86 +98,80 @@ def sky_fit(
     return_skyarr: bool = False,
     **kwargs,
 ) -> Table | tuple[Table, np.ndarray]:
-    """Estimate the sky value from image and annulus.
+    """Estimate sky values from an image or one or more annuli.
 
     Parameters
     ----------
-    ccd: `~astropy.nddata.CCDData`, HDU, ndarray
-        The image data to extract sky at given annulus.
+    ccd : `~astropy.nddata.CCDData`, HDU, or ndarray
+        Image data from which to extract sky values.
 
-    annulus: annulus object, optional
-        The annulus which will be used to estimate sky values.
-        If `None` (default), the whole image will be used.
+    annulus : annulus object, optional
+        Annulus used for the estimate. If `None` (default), use the whole
+        image.
 
     method : {"sex", "IRAF", "MMM", "mean", "median"}, callable, optional
-        The method to estimate sky value.
+        Sky estimator. Names are case-insensitive:
 
-          * ``"mean"``/``"median"``: simple nanmean/nanmedian of the sky values.
-          * ``"sex"``  == (med_factor, mean_factor) = (2.5, 1.5)
-          * ``"IRAF"`` == (med_factor, mean_factor) = (3, 2), or the mean
-            when the mean is below the median.
-          * ``"MMM"``  == (med_factor, mean_factor) = (3, 2)
+        * ``"mean"``/``"median"``: simple nanmean/nanmedian.
+        * ``"sex"``: ``(med_factor, mean_factor) = (2.5, 1.5)``.
+        * ``"IRAF"``: ``(med_factor, mean_factor) = (3, 2)``, or the mean
+          when the mean is below the median.
+        * ``"MMM"``: ``(med_factor, mean_factor) = (3, 2)``.
 
-        where ``msky = (med_factor * med) - (mean_factor * mean)``.
-        `"MMM"` uses the same formula as visualization's `statistic="mode"`;
-        it is not the iterative `mmm_dao` algorithm.
-        For the ``"sex"`` method, if (mean - median)/std > 0.3, median is used
-        instead of the above formula, which mimics the SExtractor's way.
-        If a callable is given, it should have the signature
-        ``func(skyarr, ssky) -> msky`` where `skyarr` is the 1-d array of sky
-        values and `ssky` is the sample standard deviation after using
-        `sky_clipper`. Example: ``method = lambda x, s: np.median(x)``.
-        The default is ``"sex"``.
+        The three compound estimators use
+        ``msky = med_factor * med - mean_factor * mean``. ``"MMM"`` uses the
+        same formula as visualization's `statistic="mode"`; it is not the
+        iterative `mmm_dao` algorithm. For ``"sex"``, use the median instead
+        when ``(mean - median) / std > 0.3``, matching SExtractor.
+
+        A callable must have signature ``func(skyarr, ssky) -> msky``. It
+        receives the 1-D clipped values and their sample standard deviation.
+        Example: ``method = lambda x, s: np.median(x)``. Default is ``"sex"``.
 
     sky_clipper : callable, `None`, optional
-        The function to be used to clip the sky values before estimating the
-        sky value. The function should have the signature
-        ``func(skyarr, **kwargs) -> clipped_skyarr`` where `skyarr` is the 1-d
-        array of sky values. The returned array must be a plain ndarray with
-        no NaN values — clipped elements should be removed, not replaced with
-        NaN — because `_sky_fit` passes the result to `reducers` statistics
-        kernels. `~astroimred._core.numeric.sigma_clipper` (the default)
-        removes clipped values and uses `imcombiners` rejection kernels for
-        compatible 1-D calls.
-        If `None`, no clipping will be applied
-        (i.e., ``lambda x: x[~np.isnan(x)]`` is used).
-        The default is `astroimred._core.numeric.sigma_clipper`.
+        Function used before estimating the sky. It must have signature
+        ``func(skyarr, **kwargs) -> clipped_skyarr`` and return a plain ndarray
+        without NaNs: remove clipped values rather than replacing them with
+        NaN. This is required by the `reducers` kernels used by `_sky_fit`.
+        The default `~astroimred._core.numeric.sigma_clipper` removes values
+        and uses `imcombiners` rejection kernels for compatible 1-D calls.
+        If `None`, apply no clipping beyond removing NaNs
+        (``lambda x: x[~np.isnan(x)]``).
 
     std_ddof : int, optional
-        The "delta-degrees of freedom" for sky standard deviation calculation.
+        Delta degrees of freedom for the sky standard deviation.
 
     to_table : bool, optional
-        If `True`, the output will be a `~astropy.table.Table` object. Otherwise,
-        return a `dict`.
+        Return a `~astropy.table.Table` when `True`; otherwise return a list of
+        dictionaries. Default is `True`.
 
     return_skyarr : bool, optional
-        If `True`, the 1-d array (or list of such if multiple annuli) of sky
-        values will be returned.
+        Also return the 1-D sky array, or a list of arrays for multiple annuli.
+        Default is `False`.
 
-    kwargs : dict, optional
-        The keyword arguments for `sky_clipper`.
+    **kwargs :
+        Keyword arguments forwarded to `sky_clipper`.
 
     Returns
     -------
-    skytable: `~astropy.table.Table` or dict
-        The table or dict of the followings.
+    skytable : `~astropy.table.Table` or list of dict
+        One row or dictionary per annulus with the following fields:
 
         msky : float
-            The estimated sky value within the all_sky data, after sigma clipping.
+            Estimated sky value after clipping.
 
         ssky : float
-            The sample standard deviation of sky value within the all_sky data,
-            after sigma clipping.
+            Sample standard deviation after clipping.
 
         nsky : int
-            The number of pixels which were used for sky estimation after the
-            sigma clipping.
+            Number of pixels used after clipping.
 
         nrej : int
-            The number of pixels which are rejected after sigma clipping.
+            Number of pixels rejected by clipping.
 
     skys : ndarray or list of ndarray
-        The 1-d array (or list of such if multiple annuli) of sky values.
+        Returned only when `return_skyarr=True`: the 1-D sky values, or one
+        array per annulus.
 
     """
     skydicts = []
@@ -293,44 +285,42 @@ def mmm_dao(
     maxiter: int = 50,
     readnoise: float = 0,
 ) -> tuple[float, float, float]:
-    """Use the MMM-DAO algorithm to estimate the sky value.
+    """Estimate a sky value with the iterative MMM-DAO algorithm.
 
     Notes
     -----
-    Please use sky_fit. This function is less optimized for calculation.
-    Maybe updated in the future.
+    Prefer `sky_fit` for routine use. This implementation is slower and may
+    change in the future.
 
-    The MMM-DAO algorithm is a robust estimator of the sky value. This
-    algorithm is based on the MMM algorithm, which is a modification of the
-    DAOFIND algorithm in DAOPHOT. This algorithm is described in Section 2.2
-    of `Stetson (1987) <https://ui.adsabs.harvard.edu/abs/1987PASP...99..191S/abstract>`_.
+    MMM-DAO is a robust sky estimator based on the MMM modification of DAOFIND
+    in DAOPHOT. See Section 2.2 of
+    `Stetson (1987) <https://ui.adsabs.harvard.edu/abs/1987PASP...99..191S/abstract>`_.
 
     Parameters
     ----------
     sky : array-like
-        The sky values. This is usually the difference between the image and
-        the object mask.
+        Sky values, usually the image after object masking or subtraction.
 
-    highbad : bool, optional
-        If `True`, the sky values are assumed to be high values, and the
-        algorithm will search for low values. If `False`, the sky values are
-        assumed to be low values, and the algorithm will search for high
-        values. If `None`, the algorithm will search for both high and low
-        values. The default is None.
+    highbad : float or None, optional
+        Optional value that limits the upper side of the initial symmetric
+        interval. The current implementation applies it as
+        ``min(cut1, highbad - skymid)``. `None` leaves that interval unchanged.
+        The annotation still accepts `bool` for compatibility, although this
+        branch uses the value arithmetically. Default is `None`.
 
     min_nsky : float or int, optional
-        The minimum number of sky values to use. The default is 20. (`minsky` in DAOPHOT MMM)
+        Minimum number of sky values. Default is `20` (`minsky` in DAOPHOT MMM).
 
     maxiter : int, optional
-        The maximum number of iterations. The default is 50.
+        Maximum number of iterations. Default is `50`.
 
     readnoise : float, optional
-        The read noise of the image. The default is 0.
+        Image read noise. Default is `0`.
 
     Returns
     -------
     sky : float
-        The estimated sky value.
+        Estimated sky value.
 
     """
     sky = np.array(sky)

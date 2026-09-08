@@ -1,4 +1,4 @@
-"""Estimate ring levels with finite-only reductions and optional clipping."""
+"""Compute finite-only ring statistics with optional sigma clipping."""
 
 from collections.abc import Callable
 from statistics import NormalDist
