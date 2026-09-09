@@ -3,6 +3,36 @@
 Read the whole-image results before choosing a backend. Faster ring reductions
 do not necessarily make the complete enhancement faster.
 
+## Larson–Sekanina filtering
+
+**801 × 801 images: 10–14 ms nearest, 34–38 ms bilinear.** Direct Cartesian
+sampling is 1.38–3.66× faster than the independent SciPy polar-coordinate
+reference in these cases. This comparison includes coordinate construction and
+strict missing-support handling; it does not isolate the interpolation kernel.
+
+Measured September 9, 2026, on macOS ARM64: Python 3.13.11, NumPy 2.4.4,
+SciPy 1.17.1, reducers 0.4.0. Medians of five warm calls exclude imports and
+input creation. Inputs are seeded inverse-radius comae with noise, fractional
+centers, optional missing patches, `angle=10`, and `radial_shift=0` or `2`.
+
+All 16 cases (300 × 300 and 801 × 801) have identical finite/`NaN` masks.
+Nearest results match exactly; maximum bilinear difference is $2.1\times10^{-11}$
+(checked with `rtol=atol=1e-10`). Peak traced allocation at 801 × 801 is
+35–65 MiB nearest and 81–110 MiB bilinear, not process RSS. These measurements
+are local results, not universal speed guarantees.
+
+The production path uses vectorized NumPy gathers and adds no dependencies.
+Reducers has no coordinate resampling operation; ndfiltrs provides fixed-kernel
+filters rather than this per-pixel mapping. Bilinear arithmetic preserves
+constant fields and ignores zero-weight missing neighbors.
+
+```bash
+uv run --no-sync python benchmarks/benchmark_larson_sekanina.py \
+    --sizes 300 801 --repeats 5 --output benchmarks/larson_sekanina_results.json
+```
+
+Raw measurements: [larson_sekanina_results.json](larson_sekanina_results.json).
+
 ## Reducers 0.4: whole-image results
 
 The API now calls these records `NormStats` (`return_stats=True`, `.stats`).

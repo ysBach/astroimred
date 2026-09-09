@@ -17,12 +17,13 @@ intensities and can create apparent structure around noise, stars, and masks.
 | Standardize azimuthal contrast | `azimuthal_renormalize` | Mean $\pm N\sigma$ mapped to 0 and 1 |
 | Highlight progressively broader structure | `radially_variable_filter` | A spatial-filter residual |
 | Normalize direct pixel-center annuli | `annular_normalize` | Radial-bin statistic divided into the original pixels |
+| Reveal jets and concentric features | `larson_sekanina` | Sum of two radial/rotational differences |
 
 The first five rows mirror the supplied CometCIEF techniques. The annular
 function is a direct radial-bin alternative to the polar azimuthal functions.
 The first technique models a dust coma with a $1/\rho$ profile; gas comae need
 not follow that profile. Compare multiple techniques before interpreting a
-feature. Larson–Sekanina rotational filtering is deferred.
+feature. Larson–Sekanina filtering is a separate difference method.
 
 ## 2. Load the packaged FITS example
 
@@ -247,7 +248,55 @@ edge pair and `diagnostic.stats.bin_edges` preserves those exact edges.
 Polar rings use integer ring centers and have no `bin_edges`.
 Annular coverage is relative to in-frame centers, not a complete geometric annulus.
 
-## 4. Handle masks and boundaries
+## 4. Apply Larson–Sekanina filtering
+
+Use `angle` in degrees and `radial_shift` in pixels. The default
+`radial_shift=0` subtracts two oppositely rotated samples. A positive shift
+samples inward; a negative shift samples outward.
+
+```{python}
+rotational = air.viz.larson_sekanina(cut, cut_center, angle=10)
+combined = air.viz.larson_sekanina(
+    cut, cut_center, angle=10, radial_shift=2, interpolation="linear"
+)
+fig, axes = plt.subplots(1, 3, figsize=(10, 3), layout="constrained")
+for ax, title, result in zip(
+    axes, ("Input", "Rotation: 10°", "Rotation: 10° + radial: 2 px"),
+    (cut, rotational, combined), strict=True
+):
+    finite = result[np.isfinite(result)]
+    assert finite.size > 0
+    low, high = np.percentile(finite, [1, 99])
+    ax.imshow(result, origin="lower", cmap="gray", vmin=low, vmax=high)
+    ax.set_title(title)
+plt.show()
+```
+
+The example shifts illustrate the controls; choose values for the scale of
+your features. With $d_r$ in pixels and $d_\theta$ in degrees, the original
+[Larson & Sekanina (1984), equation (1)](https://doi.org/10.1086/113551) is
+
+$$
+L(r,\theta) = [I(r,\theta)-I(r-d_r,\theta+d_\theta)]
+            + [I(r,\theta)-I(r-d_r,\theta-d_\theta)].
+$$
+
+The two differences are **summed**, so `angle=0` gives twice a radial
+difference. Changing the sign of `angle` leaves the result unchanged.
+No logarithm, background subtraction, or intensity normalization is applied.
+
+| Option or boundary | Behavior |
+| --- | --- |
+| `interpolation="linear"` (default) | Bilinear interpolation; smooths fine structure |
+| `interpolation="nearest"` | Nearest pixel; half-integers round upward |
+| Masked/nonfinite input or required sample | Output is `NaN`; zero-weight neighbors are ignored |
+| Shifted position outside the pixel-center extent, or $r-d_r<0$ | Output is `NaN`; no extrapolation |
+| $r=0$ with a nonzero radial shift | Output is `NaN` because the radial direction is undefined |
+
+Compare with the original image: centering errors and sharp features can
+produce positive/negative artifacts. Measure photometry on the original.
+
+## 5. Handle masks and boundaries
 
 Pass `mask=True` at pixels you want excluded. Masked arrays are also
 supported. Nonfinite inputs are excluded automatically. For a `CCDData`
@@ -267,6 +316,7 @@ assert np.isnan(masked[mask]).all()
 | Polar sampling and reconstruction | Any missing required sample makes the cell or output pixel `NaN`. Radii below 0.5 pixels and incomplete outer coverage are undefined |
 | `annular_normalize` | Pixel centers outside the supplied intervals are `NaN`. Bounds include the lower edge and exclude the upper; there is no subpixel area weighting |
 | Spatial filtering | Every neighbor must be available. A mask invalidates any output whose stencil touches it |
+| Larson–Sekanina | Both shifted positions must be available; only nonzero-weight contributors affect validity |
 
 A contaminated or incomplete polar ring uses its remaining valid cells for
 the statistic. Partial azimuth coverage can bias the result.

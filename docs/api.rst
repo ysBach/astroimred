@@ -51,5 +51,6 @@ The visualization helpers require ``astroimred[full]``.
    astroimred.viz
    astroimred.viz.enhance
    astroimred.viz.imshow
+   astroimred.viz.larson
    astroimred.viz.rvsf
    astroimred.viz.ticks

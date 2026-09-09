@@ -152,8 +152,7 @@ def radially_variable_filter(
     ----------
     Samarasinha, Martin, and Larson (2013), Cometary Coma Image Enhancement
     Facility, https://cie.psi.edu/. The source attributes this algorithm
-    to Steve Larson. Larson-Sekanina rotational filtering is a separate
-    method and is not implemented here.
+    to Steve Larson. For rotational differences, use `larson_sekanina`.
 
     Examples
     --------

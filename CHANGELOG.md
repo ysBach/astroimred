@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Larson–Sekanina filtering required custom code; `larson_sekanina(angle=10)`
+  now sums opposite rotational differences, with radial shifts, interpolation, and masks.
+
 - `return_stats=True` details were a dense paragraph; they now use a field
   table. Guides and docstrings group options while retaining examples and limits.
 

@@ -160,6 +160,7 @@ quartodoc:
         - viz.enhance.NormStats
         - viz.enhance.EnhancementResult
         - viz.rvsf.radially_variable_filter
+        - viz.larson.larson_sekanina
     - title: Coordinates and observing geometry
       desc: Inspect WCS, derive local transforms, and compute airmass.
       contents:
