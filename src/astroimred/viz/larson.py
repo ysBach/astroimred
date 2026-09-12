@@ -5,20 +5,9 @@ from typing import Literal
 import numpy as np
 import numpy.typing as npt
 
-from ._enhance_common import _prepare_image
+from ._enhance_common import _finite_scalar, _prepare_image
 
 __all__ = ["larson_sekanina"]
-
-
-def _finite_scalar(value: float, name: str) -> float:
-    """Validate a signed real scalar without accepting booleans or strings."""
-    raw = np.asarray(value)
-    if raw.shape != () or raw.dtype.kind not in "iuf":
-        raise ValueError(f"{name} must be a finite real scalar")
-    value = float(raw)
-    if not np.isfinite(value):
-        raise ValueError(f"{name} must be a finite real scalar")
-    return value
 
 
 def _lerp(

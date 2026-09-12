@@ -134,6 +134,17 @@ def _positive_integer(value: int, name: str) -> int:
     return value
 
 
+def _finite_scalar(value: float, name: str) -> float:
+    """Validate a signed real scalar without accepting booleans or strings."""
+    raw = np.asarray(value)
+    if raw.shape != () or raw.dtype.kind not in "iuf":
+        raise ValueError(f"{name} must be a finite real scalar")
+    value = float(raw)
+    if not np.isfinite(value):
+        raise ValueError(f"{name} must be a finite real scalar")
+    return value
+
+
 def _finite_nonnegative(value: float, name: str) -> float:
     """Validate a finite nonnegative scalar."""
     raw = np.asarray(value)

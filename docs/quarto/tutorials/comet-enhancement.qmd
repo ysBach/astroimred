@@ -11,7 +11,7 @@ intensities and can create apparent structure around noise, stars, and masks.
 
 | Goal | Function | Result |
 | --- | --- | --- |
-| Compensate a $1/\rho$ brightness profile | `enhance_rho` | Image multiplied by pixel-averaged radius |
+| Compensate a radial power-law profile | `enhance_rho(power=-1)` | Image multiplied by the midpoint mean of $\rho^{-\mathrm{power}}$ |
 | Divide by the azimuthal mean | `azimuthal_normalize(statistic="mean")` | Relative brightness at each radius |
 | Reduce sensitivity to bright outliers | `azimuthal_normalize(statistic="median")` | Division by the azimuthal median |
 | Standardize azimuthal contrast | `azimuthal_renormalize` | Mean $\pm N\sigma$ mapped to 0 and 1 |
@@ -21,9 +21,10 @@ intensities and can create apparent structure around noise, stars, and masks.
 
 The first five rows mirror the supplied CometCIEF techniques. The annular
 function is a direct radial-bin alternative to the polar azimuthal functions.
-The first technique models a dust coma with a $1/\rho$ profile; gas comae need
-not follow that profile. Compare multiple techniques before interpreting a
-feature. Larson–Sekanina filtering is a separate difference method.
+The first technique defaults to a dust coma with a $1/\rho$ profile; set
+`power` for another radial slope. Gas comae need not follow that default.
+Compare multiple techniques before interpreting a feature. Larson–Sekanina
+filtering is a separate difference method.
 
 ## 2. Load the packaged FITS example
 
@@ -160,6 +161,32 @@ plt.show()
 
 Each panel has its own display limits. Compare feature locations and shapes,
 not brightness between panels or between different radii of a normalized image.
+
+### Choose the radial profile power
+
+`power` describes the assumed brightness law $I\propto\rho^{\mathrm{power}}$,
+with radius in pixels. The correction uses the opposite exponent:
+
+| `power` | Correction averaged over each pixel's midpoint grid |
+| --- | --- |
+| `-1` (default) | $\rho$; preserves the existing finite results |
+| `-1.5` | $\rho^{1.5}$ |
+| `-2` | $\rho^2$ |
+| `0` | Unity; valid input values are unchanged |
+
+```{python}
+steeper_profile = air.viz.enhance_rho(cut, cut_center, power=-1.5)
+assert steeper_profile.shape == cut.shape
+assert np.isfinite(steeper_profile).all()
+```
+
+The factor is `mean(rho**(-power))`, not `mean(rho)**(-power)`. Positive
+powers divide by radius: a midpoint exactly at $\rho=0$ makes that pixel
+`NaN`. Grids that avoid zero can give finite but sampling-dependent values
+near the nucleus. This is a discrete midpoint average; for `power >= 2`,
+the continuous area integral diverges in pixels containing the nucleus.
+No radius floor is added. Nonfinite corrections and overflowed products
+become `NaN`; masks and nonfinite input pixels stay excluded.
 
 ### Inspect the normalization statistics
 

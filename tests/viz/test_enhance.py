@@ -95,6 +95,100 @@ def test_enhance_rho_accepts_a_masked_array():
     assert not image.mask[2, 2]
 
 
+@pytest.mark.parametrize("power", [-2.0, -0.5, 0.5, 2.0])
+def test_enhance_rho_compensates_the_modeled_profile_power(power: float) -> None:
+    """A power-law image becomes constant under pixel-center compensation."""
+    yy, xx = np.indices((5, 5), dtype=np.float64)
+    center = (2.25, 1.5)
+    radius = np.hypot(xx - center[0], yy - center[1])
+
+    result = enhance_rho(7.0 * radius**power, center, power=power, subpixels=1)
+
+    assert_allclose(result, 7.0)
+
+
+def test_enhance_rho_averages_powered_midpoints() -> None:
+    """Square correction uses the mean square radius, not the squared mean."""
+    yy, xx = np.indices((3, 4), dtype=np.float64)
+    center = (1.25, 0.75)
+    # Two midpoints at +/-0.25 per axis add 2 * 0.25**2 to mean rho**2.
+    expected = (xx - center[0]) ** 2 + (yy - center[1]) ** 2 + 0.125
+
+    result = enhance_rho(np.ones((3, 4)), center, power=-2, subpixels=2)
+
+    assert_allclose(result, expected)
+
+
+def test_enhance_rho_zero_power_preserves_values_and_combines_masks() -> None:
+    """A flat modeled profile leaves finite pixels unchanged, including rho=0."""
+    image = np.ma.array(np.arange(9.0).reshape(3, 3) - 4, mask=False)
+    image.mask[0, 0] = True
+    image.data[0, 1] = np.inf
+    mask = np.zeros((3, 3), dtype=bool)
+    mask[2, 2] = True
+    expected = image.data.copy()
+    expected[image.mask | mask | ~np.isfinite(expected)] = np.nan
+
+    result = enhance_rho(image, (1, 1), power=0, mask=mask)
+
+    assert_array_equal(result, expected)
+    assert not np.shares_memory(result, image.data)
+
+
+@pytest.mark.parametrize("subpixels", [1, 3])
+def test_enhance_rho_singular_sample_is_nan(subpixels: int) -> None:
+    """A positive profile exponent cannot use a midpoint exactly at rho=0."""
+    result = enhance_rho(np.ones((3, 3)), (1, 1), power=0.5, subpixels=subpixels)
+
+    assert np.isnan(result[1, 1])
+    assert np.isfinite(result[0, 0])
+
+
+def test_enhance_rho_negative_power_keeps_zero_radius_zero() -> None:
+    """A negative profile exponent gives zero correction at the nucleus."""
+    result = enhance_rho(np.ones((3, 3)), (1, 1), power=-0.5, subpixels=1)
+
+    assert result[1, 1] == 0.0
+
+
+def test_enhance_rho_power_average_avoids_overflowing_finite_sum() -> None:
+    """Large finite correction samples are averaged without summing overflow."""
+    # Every sampled rho is 2**(-3/2), so this correction is 2**1022.
+    # Four copies would overflow an ordinary sum, but their mean is finite.
+    power = 2044.0 / 3.0
+    expected = np.hypot(0.25, 0.25) ** (-power)
+
+    result = enhance_rho(np.ones((1, 1)), (0, 0), power=power, subpixels=2)
+
+    assert np.isfinite(result[0, 0])
+    assert_allclose(result[0, 0], expected)
+
+
+def test_enhance_rho_nonfinite_correction_or_output_is_nan() -> None:
+    """Unrepresentable factors and multiplied intensities are undefined."""
+    with np.errstate(all="raise"):
+        factor_overflow = enhance_rho(np.ones((1, 3)), (0, 0), power=-2048, subpixels=1)
+        output_overflow = enhance_rho(
+            np.full((1, 3), np.finfo(float).max), (0, 0), subpixels=1
+        )
+
+    assert np.isnan(factor_overflow[0, 2])
+    assert np.isnan(output_overflow[0, 2])
+
+
+@pytest.mark.parametrize("power", [True, "-1", [-1], None, 1j, np.inf, np.nan])
+def test_enhance_rho_rejects_invalid_profile_power(power: object) -> None:
+    """The profile exponent must be one finite real scalar."""
+    with pytest.raises(ValueError, match="power"):
+        enhance_rho(np.ones((3, 3)), (1, 1), power=power)
+
+
+def test_enhance_rho_zero_power_still_validates_sampling() -> None:
+    """Identity enhancement does not silently accept an invalid sampling grid."""
+    with pytest.raises(ValueError, match="subpixels"):
+        enhance_rho(np.ones((3, 3)), (1, 1), power=0, subpixels=0)
+
+
 @pytest.mark.parametrize("statistic", ["mean", "median"])
 def test_azimuthal_normalize_constant_image_is_unity_inside_rings(statistic):
     """A constant image stays one after division by its radial statistic."""

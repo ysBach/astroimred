@@ -11,6 +11,7 @@ import reducers as rd
 
 from ._enhance_common import (
     _finite_positive,
+    _finite_scalar,
     _positive_integer,
     _prepare_image,
     _subpixel_offsets,
@@ -154,10 +155,11 @@ def enhance_rho(
     image: npt.ArrayLike,
     center: tuple[float, float],
     *,
+    power: float = -1.0,
     subpixels: int = 10,
     mask: npt.ArrayLike | None = None,
 ) -> npt.NDArray[np.float64]:
-    """Multiply each image pixel by its subpixel-averaged radius.
+    """Compensate a radial brightness profile proportional to ``rho**power``.
 
     Parameters
     ----------
@@ -167,38 +169,89 @@ def enhance_rho(
     center : tuple of float
         Zero-based ``(x, y)`` nucleus coordinates within the image. Fractional
         positions are supported.
+    power : float, optional
+        Finite exponent of the assumed brightness profile. Multiply by the
+        midpoint mean of ``rho**(-power)``, with radius in pixels. Default
+        `-1` retains multiplication by mean radius; `-2` uses mean squared
+        radius. `0` leaves valid pixel values unchanged.
     subpixels : int, optional
         Midpoint samples per pixel axis. The default `10` follows the
-        CometCIEF source's 10-by-10 radius quadrature; `1` uses pixel centers.
+        CometCIEF source's 10-by-10 quadrature; `1` uses pixel centers.
     mask : array-like or None, optional
         Additional boolean-convertible mask with the same shape as `image`.
 
     Returns
     -------
     ndarray, shape (height, width)
-        Float64 image. The input is never modified, and missing input pixels
-        remain NaN.
+        Float64 image. The input is never modified. Missing inputs, any
+        nonfinite midpoint correction, and overflowed products become `NaN`.
+
+    Raises
+    ------
+    TypeError
+        If `image` or `center` is not real numeric data.
+    ValueError
+        If image/mask geometry, `center`, `power`, or `subpixels` is invalid.
 
     Notes
     -----
-    This is a direct radius multiplication. The source routine first rescales
-    the whole image to mean 100; this API omits that presentation-only step so
-    calibrated data remains composable. No clipping or uncertainty propagation
-    is applied.
+    Each output is ``image * mean(rho**(-power))`` over its midpoint grid,
+    not ``image * mean(rho)**(-power)``. This is a discrete midpoint average,
+    not analytic pixel-area integration.
+
+    At a sampled ``rho=0``, negative `power` gives zero correction, `power=0`
+    gives unity, and positive `power` is singular (`NaN`). A grid that avoids
+    zero can return a finite value; near-nucleus results for positive powers
+    depend strongly on sampling. For ``power >= 2``, the continuous area
+    integral diverges in pixels containing the nucleus even if the discrete
+    midpoint mean is finite. No radius floor is added.
+
+    The source routine first rescales the whole image to mean 100; this API
+    omits that presentation-only step so calibrated data remains composable.
+    No clipping or uncertainty propagation is applied.
+
+    Examples
+    --------
+    Compensate a ``1/rho**1.5`` profile:
+
+    >>> image = np.ones((3, 3))
+    >>> result = enhance_rho(image, (1, 1), power=-1.5, subpixels=1)
+    >>> bool(result[1, 2] == 1.0)
+    True
     """
     data, (cx, cy) = _prepare_image(image, center, mask)
+    power = _finite_scalar(power, "power")
     offsets = _subpixel_offsets(subpixels)
     subpixels = offsets.size
+    if power == 0.0:
+        return data
     yy = np.arange(data.shape[0], dtype=np.float64)[:, None]
     xx = np.arange(data.shape[1], dtype=np.float64)[None, :]
     x_distances = [xx + offset - cx for offset in offsets]
     y_distances = [yy + offset - cy for offset in offsets]
-    radius_sum = np.zeros(data.shape, dtype=np.float64)
-    for y_distance in y_distances:
-        for x_distance in x_distances:
-            radius_sum += np.hypot(x_distance, y_distance)
-    result = data * (radius_sum / float(subpixels * subpixels))
-    result[np.isnan(data)] = np.nan
+    correction = np.zeros(data.shape, dtype=np.float64)
+    if power == -1.0:
+        # Retain the original accumulation order and avoid a unit power call.
+        for y_distance in y_distances:
+            for x_distance in x_distances:
+                correction += np.hypot(x_distance, y_distance)
+        correction /= float(subpixels * subpixels)
+    else:
+        valid = np.ones(data.shape, dtype=bool)
+        sample_count = 0
+        for y_distance in y_distances:
+            for x_distance in x_distances:
+                factor = np.hypot(x_distance, y_distance)
+                with np.errstate(over="ignore", divide="ignore", invalid="ignore"):
+                    np.power(factor, -power, out=factor)
+                finite = np.isfinite(factor)
+                valid &= finite
+                sample_count += 1
+                _update_mean(correction, np.where(finite, factor, 0.0), sample_count)
+        correction[~valid] = np.nan
+    with np.errstate(over="ignore", invalid="ignore"):
+        result = data * correction
+    result[~np.isfinite(result)] = np.nan
     return result
 
 

@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- `enhance_rho` only corrected `1/rho`; `power=-2` now uses mean `rho**2`,
+  while default `power=-1` preserves finite results. Overflow now gives `NaN`.
+
 - Larson–Sekanina filtering required custom code; `larson_sekanina(angle=10)`
   now sums opposite rotational differences, with radial shifts, interpolation, and masks.
 
