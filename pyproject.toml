@@ -1,23 +1,23 @@
 [project]
 name = "astroimred"
-version = "0.3.0"
+version = "0.4.0"
 description = "FITS file management and lightweight inspection utilities."
 readme = "README.md"
 license = "BSD-3-Clause"
 license-files = ["LICENSE"]
 authors = [
-    { name = "ysBach", email = "ysbach93@gmail.com" }
+    { name = "ysBach", email = "ysbach20766@gmail.com" }
 ]
 requires-python = ">=3.11"
 # Core dependencies for basic manipulation of FITS
 dependencies = [
     "astropy>=7.0",
-    "astro-ndslice>=0.2",
+    "astro-ndslice>=0.4",
     "numpy>=1.24",
     "pandas>=2.0",
     "pyarrow>=14",
-    "astroapers>=0.1.2",
-    "imcombiners>=0.1.1",
+    "astroapers>=0.2.0",
+    "imcombiners>=0.1.2",
     "reducers>=0.4.0",
 ]
 
@@ -32,7 +32,6 @@ Changelog = "https://github.com/ysBach/astroimred/blob/main/CHANGELOG.md"
 
 [project.optional-dependencies]
 phot = [
-    "astroapers",
     "matplotlib>=3.9.1",
     "photutils>=2.0,<4.0",
     "scipy>=1.9.2",
@@ -46,8 +45,6 @@ reduction = [
     "scipy>=1.9.2",
 ]
 full = [
-    "astroapers",
-    "fitsio>=1.2",
     "astroscrappy>=1.1",
     "ccdproc>=2.0",
     "click>=8.0",
@@ -56,13 +53,13 @@ full = [
     "numba>=0.59",
     "numexpr>=2.8",
     "photutils>=2.0,<4.0",
-    "pyarrow>=14",
     "scipy>=1.9.2",
     "sep>=1.4",
 ]
 
 [dependency-groups]
 dev = [
+    "isort",
     "pytest>=8.0",
     "ruff>=0.8",
     "sphinx>=7.2",
