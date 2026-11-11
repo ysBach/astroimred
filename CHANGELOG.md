@@ -4,27 +4,13 @@
 
 ### Breaking changes
 
-- Aperture-sum errors overestimated the noise of partially covered pixels;
-  `apsum_err` (and so `srcsum_err`, `merr`) and `radcum_profile` `err`/`var` now
-  use `sqrt(sum(w**2 * error**2))` instead of `sqrt(sum(w * error**2))`, where
-  `w` is the exact pixel-overlap weight. This is the variance of the computed
-  sum `sum(w * data)` for independent pixel noise. Errors become smaller; for
-  a uniform error map, by about `0.17/r` for radius `r` in pixels (14% at
-  `r=1.5`, 3% at `r=5.5`, 0.8% at `r=20`). `method="center"` (`w` is 0 or 1)
-  is unchanged. photutils made the same fix in 3.1.0 (PR #2398).
-- `apphot_annulus` `srcsum_err` added `apsum_npix * ssky**2`, which counts sky
-  noise twice (the error map already holds it), and dropped the sky-estimate
-  error. It now uses `srcsum_err**2 = apsum_err**2 + (apsum_npix * dsky)**2`.
-  In a 2000-image simulation, the reported error changed from 1.32× to 0.99×
-  the measured `srcsum` scatter at `r=2` pixels and from 0.62× to 0.98× at
-  `r=14` (annulus 20–25 pixels). Large apertures with small annuli now get
-  correctly large errors. `merr` and `snr` change accordingly.
-- `sky_fit` (and `apphot_annulus`) return `dsky = ssky * sqrt(c / nsky)`, the
-  standard error of `msky`, with `c = 1` (mean), `pi/2` (median), `4.567`
-  (`"sex"` mode), or `6.137` (`"IRAF"`/`"MMM"` mode) for Gaussian sky noise.
-  `c` follows the per-annulus `"sex"` median and `"IRAF"` mean fallbacks.
-  Callable methods give `NaN`; `srcsum_err` then uses `c = 1`, a lower bound.
-  `radial_profile` returns it as `dpix`.
+- Aperture-sum errors used `sqrt(sum(w * error**2))` and overestimated small
+  apertures; `apsum_err` and `radcum_profile` errors now use
+  `sqrt(sum(w**2 * error**2))` (`w`: pixel-overlap weight), as photutils 3.1 does.
+- `srcsum_err` counted sky noise twice and omitted the sky-estimate error; it
+  now uses `sqrt(apsum_err**2 + (apsum_npix * dsky)**2)`.
+- `sky_fit` and `apphot_annulus` add `dsky`, the standard error of `msky`
+  (`radial_profile`: `dpix`).
 
 ## 0.3.0 - 2026-06-18
 
