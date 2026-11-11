@@ -1,0 +1,120 @@
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  workflow_call:
+    inputs:
+      release-tag:
+        description: Exact release tag; empty for a branch rehearsal
+        type: string
+        default: ""
+    outputs:
+      version:
+        value: ${{ jobs.build.outputs.version }}
+
+permissions:
+  contents: read
+
+env:
+  UV_NO_SOURCES: "true"
+  MPLBACKEND: Agg
+
+jobs:
+  build:
+    name: Release checks and distributions
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@v8.1.0
+      - name: Install release tooling
+        run: |
+          uv venv --python 3.13 .ci-venv
+          uv pip install --python .ci-venv/bin/python pytest ruff
+      - name: Lint and test release tooling
+        run: |
+          .ci-venv/bin/ruff check scripts .github/tests
+          .ci-venv/bin/ruff format --check scripts .github/tests
+          .ci-venv/bin/python -I -m pytest .github/tests -q
+      - name: Validate release metadata
+        id: version
+        env:
+          RELEASE_TAG: ${{ inputs.release-tag }}
+        shell: bash
+        run: |
+          args=()
+          if [ -n "$RELEASE_TAG" ]; then
+            args+=(--tag "$RELEASE_TAG")
+          fi
+          .ci-venv/bin/python scripts/check_release.py "${args[@]}" \
+            --github-output "$GITHUB_OUTPUT" --notes-output release-notes.md
+      - name: Build wheel and source distribution
+        run: uv build --no-sources --python .ci-venv/bin/python --out-dir dist
+      - uses: actions/upload-artifact@v6
+        with:
+          name: distributions
+          path: dist/*
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v6
+        with:
+          name: release-notes
+          path: release-notes.md
+          if-no-files-found: error
+
+  test:
+    needs: build
+    name: Installed ${{ matrix.distribution }} / ${{ matrix.os }} / Python ${{ matrix.python }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest]
+        python: ["3.11", "3.12", "3.13", "3.14"]
+        distribution: [wheel]
+        include:
+          - os: ubuntu-latest
+            python: "3.14"
+            distribution: sdist
+          - os: macos-15
+            python: "3.13"
+            distribution: wheel
+          - os: windows-2022
+            python: "3.13"
+            distribution: wheel
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@v8.1.0
+      - uses: actions/download-artifact@v7
+        with:
+          name: distributions
+          path: dist
+      - name: Install and test the distribution
+        shell: bash
+        env:
+          PYTHON_VERSION: ${{ matrix.python }}
+          DISTRIBUTION: ${{ matrix.distribution }}
+          EXPECTED_VERSION: ${{ needs.build.outputs.version }}
+        run: |
+          uv venv --python "$PYTHON_VERSION" .artifact-venv
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            source .artifact-venv/Scripts/activate
+          else
+            source .artifact-venv/bin/activate
+          fi
+          shopt -s nullglob
+          artifacts=(dist/*.whl)
+          if [ "$DISTRIBUTION" = "sdist" ]; then
+            artifacts=(dist/*.tar.gz)
+          fi
+          test "${#artifacts[@]}" -eq 1
+          uv pip install "${artifacts[0]}[full]" pytest
+          python -I scripts/smoke_install.py
+          imred --help
+          python -I -m pytest tests --import-mode=importlib -q
