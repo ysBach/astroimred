@@ -134,7 +134,10 @@ def radial_profile(
     Returns
     -------
     profs : pandas.DataFrame
-        A DataFrame containing the radial profile data, with columns for radius and sky fit parameters.
+        Radial profile with columns ``r``, ``mpix``, ``spix``, ``dpix``,
+        ``npix``, ``nrej``, and ``spix_n``. ``dpix`` is the standard error
+        of ``mpix`` (`sky_fit` ``dsky``); ``spix_n = spix / sqrt(npix)``
+        equals ``dpix`` only for the mean estimator.
     center_val : float
         The value of the pixel at the center position.
 
@@ -163,7 +166,9 @@ def radial_profile(
 
     if add_center:
         # use original names (names for sky_fit before renaming)
-        profs = [{"r": 0, "msky": center_val, "ssky": 0, "nsky": 1, "nrej": 0}]
+        profs = [
+            {"r": 0, "msky": center_val, "ssky": 0, "dsky": 0, "nsky": 1, "nrej": 0}
+        ]
     else:
         profs = []
     for r, _thick in zip(radii, thickness, strict=False):
@@ -173,7 +178,9 @@ def radial_profile(
         profs.append(_skyfit)
 
     profs = pd.DataFrame.from_dict(profs)
-    profs = profs.rename(columns={"msky": "mpix", "ssky": "spix", "nsky": "npix"})
+    profs = profs.rename(
+        columns={"msky": "mpix", "ssky": "spix", "dsky": "dpix", "nsky": "npix"}
+    )
     profs["spix_n"] = profs["spix"] / np.sqrt(profs["npix"])
 
     if norm_by_center:
@@ -239,8 +246,10 @@ def radcum_profile(
         - ``r``    : aperture radius
         - ``apsum``: aperture sum within radius r
         - ``npix`` : weighted unmasked aperture support (only if ``add_npix=True``)
-        - ``var``  : aperture sum of variance (only if ``return_var=True`` and variance/error given)
-        - ``err``  : sqrt of variance sum (only if ``return_var=False`` and variance/error given)
+        - ``var``  : variance of ``apsum``, ``sum(w**2 * var)`` with exact
+          overlap weights ``w`` (only if ``return_var=True`` and variance/error given)
+        - ``err``  : square root of ``var`` (only if ``return_var=False`` and
+          variance/error given)
     """
     if var is not None and err is not None:
         raise ValueError("Provide either `var` or `err`, not both.")
@@ -286,14 +295,15 @@ def radcum_profile(
     unc_vals = None
     unc_col = None
     if var_map is not None:
-        var_vals = np.array(
-            [
-                aapk.apsum_circ_exact(
-                    var_map, x, y, r, mask=_mask_arr, return_npix=False
-                ).reshape(-1)[0]
-                for r in radii
-            ]
-        )
+        # Var(sum(w * im)) = sum(w**2 * var) for independent pixel noise.
+        var_vals = np.empty(radii.size, dtype=np.float64)
+        for idx, r in enumerate(radii):
+            ap = aap.CircAp((x, y), r=r)
+            (w,) = ap.weights_exact()
+            (bbox,) = ap.bboxes()
+            var_vals[idx] = bbox.apsum(
+                np.square(w), var_map, mask=_mask_arr, return_npix=False
+            )
         if return_var:
             unc_vals, unc_col = var_vals, "var"
         else:
