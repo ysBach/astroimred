@@ -3,9 +3,16 @@
 .claude/
 .cursor/
 .kiro/
-.handoff/
+.handoff
 .ruff_cache/
 .uv-cache/
+.venv-docs/
+docs/quarto/api/
+docs/quarto/_site/
+docs/quarto/.quarto/
+docs/quarto/_freeze/
+docs/quarto/objects.json
+docs/quarto/**/*_files/
 .vscode
 
 # Byte-compiled / optimized / DLL files
@@ -99,7 +106,6 @@ ipython_config.py
 .python-version
 
 # uv
-uv.lock
 
 # pipenv
 #   According to pypa/pipenv#598, it is recommended to include Pipfile.lock in version control.

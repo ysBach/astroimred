@@ -45,8 +45,6 @@ website:
   page-footer:
     left: Documentation follows the main branch.
     right:
-      - text: Build these docs
-        href: contributing.qmd
       - text: imcombiners
         href: https://ysbach.github.io/imcombiners/
       - text: astroapers
