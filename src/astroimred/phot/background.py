@@ -12,6 +12,57 @@ from astroimred._core.statistics import _mode_from_stats
 __all__ = ["annul2values", "quick_sky_circ", "sky_fit", "mmm_dao"]
 
 
+def _linear_mode_c(med_factor: float, mean_factor: float) -> float:
+    """Return ``c`` for ``msky = med_factor*median - mean_factor*mean``.
+
+    With ``a = med_factor`` and ``b = mean_factor``,
+    ``Var(a*median - b*mean) = (a**2 * pi/2 + b**2 - 2*a*b) * ssky**2 / nsky``.
+    This uses ``Var(median) = (pi/2) * ssky**2 / nsky`` and
+    ``Cov(median, mean) = Var(mean) = ssky**2 / nsky``. The covariance equals
+    ``Var(mean)`` because the mean is the efficient Gaussian location
+    estimator, and the covariance of an efficient estimator with any unbiased
+    estimator is its variance.
+    """
+    return med_factor**2 * np.pi / 2 + mean_factor**2 - 2 * med_factor * mean_factor
+
+
+_C_MEAN = 1.0
+_C_MEDIAN = np.pi / 2
+_C_SEX = _linear_mode_c(2.5, 1.5)
+_C_MMM = _linear_mode_c(3.0, 2.0)
+
+
+def _sky_var_factor(
+    method: str, mean: float, median: float | None, std: float
+) -> float:
+    """Return ``c`` for the estimator branch that `_mode_from_stats` used.
+
+    ``c`` is defined by ``Var(msky) = c * ssky**2 / nsky`` for Gaussian sky
+    noise and large `nsky`. Sigma clipping changes ``c`` by a few percent.
+
+    * mean: ``c = 1``.
+    * median: ``c = pi/2``, the asymptotic variance of a Gaussian sample median.
+    * ``"sex"``, ``2.5*median - 1.5*mean``: ``c = 25*pi/8 - 21/4 = 4.567``.
+    * ``"IRAF"``/``"MMM"``, ``3*median - 2*mean``: ``c = 9*pi/2 - 8 = 6.137``.
+
+    The two linear forms come from `_linear_mode_c`. ``"sex"`` uses the median
+    when ``(mean - median)/std > 0.3``, and ``"IRAF"`` uses the mean when
+    ``mean < median``; ``c`` follows those fallbacks.
+    """
+    if method == "mean":
+        return _C_MEAN
+    if method == "median":
+        return _C_MEDIAN
+    if method == "sex":  # SExtractor uses the median for skewed samples.
+        use_median = std > 0.0 and (mean - median) / std > 0.3
+        return _C_MEDIAN if use_median else _C_SEX
+    if method == "iraf":  # IRAF uses the mean when mean < median.
+        return _C_MEAN if mean < median else _C_MMM
+    if method == "mmm":
+        return _C_MMM
+    raise ValueError(f"{method=} not understood")
+
+
 def _data_and_mask(
     ccd: CCDData | np.ndarray,
     mask: np.ndarray | None,
@@ -163,6 +214,13 @@ def sky_fit(
         ssky : float
             Sample standard deviation after clipping.
 
+        dsky : float
+            Standard error of `msky`, ``ssky * sqrt(c / nsky)``. ``c`` is the
+            variance factor of the estimator branch used per annulus, so it
+            can differ between rows; see `_sky_var_factor` for its values and
+            derivation. `NaN` for a callable `method`, because its ``c`` is
+            unknown.
+
         nsky : int
             Number of pixels used after clipping.
 
@@ -206,7 +264,7 @@ def sky_fit(
 
     for _, sky in enumerate(skys):
         skydict = {}
-        msky, std, nsky, nrej = _sky_fit(
+        msky, std, dsky, nsky, nrej = _sky_fit(
             sky,
             method=method,
             sky_clipper=sky_clipper,
@@ -215,6 +273,7 @@ def sky_fit(
         )
         skydict["msky"] = msky
         skydict["ssky"] = std
+        skydict["dsky"] = dsky
         skydict["nsky"] = nsky
         skydict["nrej"] = nrej
         skydicts.append(skydict)
@@ -236,8 +295,10 @@ def _sky_fit(
 ):
     sky_clipped = _clip_sky_values(sky, sky_clipper, kwargs)
     if sky_clipped.size == 0:
-        return np.nan, np.nan, 0, sky.size
+        return np.nan, np.nan, np.nan, 0, sky.size
     sky_clipped = _as_reducer_1d_values(sky_clipped)
+    nsky = sky_clipped.size
+    nrej = sky.size - nsky
 
     if isinstance(method, str):
         method = method.lower()
@@ -246,6 +307,7 @@ def _sky_fit(
             ddof=std_ddof,
             copy=False,
         )
+        med = None  # Needed only by the "sex" and "iraf" branch tests.
         if method == "median":
             msky = rdl.median_valid(sky_clipped, copy=False)
         elif method == "mean":
@@ -255,15 +317,14 @@ def _sky_fit(
             msky = _mode_from_stats(mean, med, std, method=method)
         else:
             raise ValueError(f"{method=} not understood")
+        dsky = std * np.sqrt(_sky_var_factor(method, mean, med, std) / nsky)
 
     else:
         std = rdl.std_valid(sky_clipped, ddof=std_ddof, copy=False)
         msky = method(sky_clipped, std)
+        dsky = np.nan  # c is unknown for a user-supplied estimator.
 
-    nsky = sky_clipped.size
-    nrej = sky.size - nsky
-
-    return msky, std, nsky, nrej
+    return msky, std, dsky, nsky, nrej
 
 
 def _clip_sky_values(

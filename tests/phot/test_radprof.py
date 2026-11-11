@@ -450,3 +450,26 @@ class TestRadprofEdgeCases:
         assert radii.size == 13
         masked_radii, _ = radprof_pix(ccd, (5, 5), mask=ccd.mask, rmax=2)
         assert masked_radii.size == 0
+
+
+def test_radcum_profile_variance_uses_squared_overlap_weights():
+    """Var(sum(w * im)) = sum(w**2 * var), including masked pixels."""
+    from astroimred.phot.radprof import radcum_profile
+
+    im = np.ones((21, 21))
+    var = np.full_like(im, 4.0)
+    mask = np.zeros_like(im, dtype=bool)
+    mask[10, 10] = True  # center pixel, w = 1 for every radius below
+    center, radii = (10.3, 9.8), np.array([1.5, 2.5, 4.0])
+
+    prof = radcum_profile(im, center, radii=radii, mask=mask, var=var, return_var=True)
+
+    sum_w2 = np.array(
+        [np.sum(np.square(aap.CircAp(center, r=r).weights_exact()[0])) for r in radii]
+    )
+    assert_allclose(prof["var"], 4.0 * (sum_w2 - 1.0))
+    # Partial pixels (w < 1) make sum(w**2) smaller than sum(w) = npix.
+    assert np.all(prof["var"] < 4.0 * prof["npix"])
+
+    prof_err = radcum_profile(im, center, radii=radii, mask=mask, err=np.sqrt(var))
+    assert_allclose(prof_err["err"], np.sqrt(prof["var"]))
