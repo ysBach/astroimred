@@ -1,0 +1,58 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  ci:
+    uses: ./.github/workflows/ci.yml
+    with:
+      release-tag: ${{ github.ref_type == 'tag' && github.ref_name || '' }}
+
+  pypi:
+    if: github.repository == 'ysBach/astroimred' && github.event_name == 'push' && github.ref_type == 'tag'
+    needs: ci
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/project/astroimred/
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v7
+        with:
+          name: distributions
+          path: dist
+      - uses: astral-sh/setup-uv@v8.1.0
+      - name: Publish tested artifacts
+        run: uv publish --trusted-publishing always --check-url https://pypi.org/simple/ dist/*
+
+  github-release:
+    needs: [ci, pypi]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v7
+        with:
+          name: distributions
+          path: dist
+      - uses: actions/download-artifact@v7
+        with:
+          name: release-notes
+          path: notes
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+        run: gh release create "$TAG" dist/* --verify-tag --title "$TAG" --notes-file notes/release-notes.md
