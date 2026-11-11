@@ -1,6 +1,7 @@
 import contextlib
 import logging
 
+import astroapers as aap
 import numpy as np
 import reducers as rd
 import reducers.lowlevel as rdl
@@ -8,6 +9,7 @@ from astropy.modeling import Fittable2DModel, Parameter
 from astropy.modeling.fitting import LevMarLSQFitter
 from astropy.modeling.models import Const2D, Gaussian2D
 from astropy.nddata import CCDData, Cutout2D
+from numpy.typing import ArrayLike
 from photutils.centroids import centroid_com
 from scipy import ndimage
 from scipy.optimize import curve_fit
@@ -801,6 +803,48 @@ class GaussianConst2D(Fittable2DModel):
         )(x, y)
 
 
+_Annulus = aap.CircAn | aap.EllipAn | aap.RectAn | aap.PillAn
+_ANNULUS_PARAMETERS = {
+    aap.CircAn: ("r_in", "r_out"),
+    aap.EllipAn: ("a_in", "b_in", "a_out", "b_out", "theta_in", "theta_out"),
+    aap.RectAn: ("w_in", "h_in", "w_out", "h_out", "theta_in", "theta_out"),
+    aap.PillAn: (
+        "w_in",
+        "a_in",
+        "b_in",
+        "w_out",
+        "a_out",
+        "b_out",
+        "theta_in",
+        "theta_out",
+        "plot_samples",
+    ),
+}
+
+
+def _recenter_annulus(annulus: _Annulus, position_xy: ArrayLike) -> _Annulus:
+    """Construct a new annulus using the input's public geometry parameters.
+
+    Parameters
+    ----------
+    annulus : CircAn, EllipAn, RectAn, or PillAn
+        Template whose geometry and plotting resolution are retained.
+    position_xy : array-like
+        New center in zero-based pixel ``(x, y)`` order.
+
+    Returns
+    -------
+    CircAn, EllipAn, RectAn, or PillAn
+        Recentered annulus. The input object is unchanged.
+    """
+    for annulus_type, parameters in _ANNULUS_PARAMETERS.items():
+        if isinstance(annulus, annulus_type):
+            return type(annulus)(
+                position_xy, **{name: getattr(annulus, name) for name in parameters}
+            )
+    raise TypeError("sky_annulus must be a CircAn, EllipAn, RectAn, or PillAn")
+
+
 def find_center_2dg(
     ccd,
     position_xy,
@@ -850,12 +894,11 @@ def find_center_2dg(
         https://iraf.readthedocs.io/en/latest/tasks/noao/digiphot/apphot/centerpars.html
         Default is ``0``.
 
-    sky_annulus : astroapers annulus object
-        The annulus to estimate the sky. All `_shape_params` of the object will
-        be kept, while positions will be updated according to the new
-        centroids. The initial input, therefore, does not need to have the
-        position information (automatically initialized by `position_xy`). If
-        `None` (default), the constant `ssky` value will be used instead.
+    sky_annulus : CircAn, EllipAn, RectAn, PillAn, or None, optional
+        Annulus template for estimating the sky. Each iteration constructs a
+        new annulus at the current centroid, retaining the template's dimensions,
+        orientations, and plotting resolution. The input object is unchanged;
+        its initial position is ignored. If `None` (default), use `ssky`.
 
     sky_kw : dict, optional
         The keyword arguments of `.backgroud.sky_fit`. Default is `None`.
@@ -907,13 +950,6 @@ def find_center_2dg(
     if sky_kw is None:
         sky_kw = {}
 
-    if sky_annulus is not None:
-        import copy
-
-        ANNULUS = copy.deepcopy(sky_annulus)
-    else:
-        ANNULUS = None
-
     def _center_2dg_iteration(
         ccd,
         position_xy,
@@ -941,9 +977,9 @@ def find_center_2dg(
         cut = Cutout2D(ccd.data, position=position_xy, size=cbox_size)
         e_cut = Cutout2D(error.data, position=position_xy, size=cbox_size)
 
-        if ANNULUS is not None:
-            ANNULUS.positions = position_xy
-            _sky = sky_fit(ccd=ccd, annulus=ANNULUS, **sky_kw, to_table=False)[0]
+        if sky_annulus is not None:
+            annulus = _recenter_annulus(sky_annulus, position_xy)
+            _sky = sky_fit(ccd=ccd, annulus=annulus, **sky_kw, to_table=False)[0]
             ssky = _sky["ssky"]
             msky = _sky["msky"]
         elif msky is None:

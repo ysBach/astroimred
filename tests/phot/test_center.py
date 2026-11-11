@@ -536,3 +536,23 @@ class TestCenterEdgeCases:
             except (ValueError, RuntimeError):
                 # Also acceptable to raise an error for undefined centroid
                 pass
+
+    def test_fit_2dgaussian_unmasked_succeeds_with_real_sep(self):
+        """Unmasked input must converge on a source without 0-d mask SEP errors."""
+        from astroimred.phot.center import _fit_2dgaussian
+
+        yy, xx = np.mgrid[:30, :30]
+        data = 5.0 + 100.0 * np.exp(-((xx - 15.0) ** 2 + (yy - 14.0) ** 2) / 8.0)
+        model = _fit_2dgaussian(data)
+        assert_allclose(model.x_mean.value, 15.0, atol=0.2)
+        assert_allclose(model.y_mean.value, 14.0, atol=0.2)
+
+    def test_fit_2dgaussian_flat_image_raises_no_source_error(self):
+        """Flat image with no detections must raise a clear ValueError."""
+        import pytest
+
+        from astroimred.phot.center import _fit_2dgaussian
+
+        data = np.ones((20, 20), dtype=np.float64)
+        with pytest.raises(ValueError, match="No source detected"):
+            _fit_2dgaussian(data)
