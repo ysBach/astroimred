@@ -54,6 +54,35 @@ def _aperture_apsum(
     raise ValueError("method must be 'exact' or 'center'")
 
 
+def _aperture_varsum(
+    aperture: Any,
+    variance: np.ndarray,
+    *,
+    mask: np.ndarray | None,
+    method: str,
+) -> np.ndarray:
+    """Return the variance of each aperture sum, ``sum(w**2 * variance)``.
+
+    The aperture sum is ``S = sum(w * data)`` with fixed overlap weights ``w``.
+    For independent pixel noise, ``Var(S) = sum(w**2 * variance)``. Center
+    sampling has ``w`` either {0, 1}, so ``w**2 == w``.
+    """
+    if method == "center":
+        return np.asarray(
+            aperture.apsum_center(variance, mask=mask, return_npix=False),
+            dtype=np.float64,
+        ).reshape(-1)
+    if method != "exact":
+        raise ValueError("method must be 'exact' or 'center'")
+    return np.array(
+        [
+            bbox.apsum(np.square(w), variance, mask=mask, return_npix=False)
+            for w, bbox in zip(aperture.weights_exact(), aperture.bboxes(), strict=True)
+        ],
+        dtype=np.float64,
+    )
+
+
 def _aperture_npix(
     aperture: Any,
     shape: tuple[int, int],
@@ -118,14 +147,8 @@ def photometer(
             total_npix = np.asarray(total_npix, dtype=np.float64).reshape(-1)
             nbadpix.extend(_nonnegative_nbadpix(total_npix - ap_npixs))
         if err is not None:
-            err_sums = _aperture_apsum(
-                aperture,
-                variance,
-                mask=bad,
-                method=method,
-                return_npix=False,
-            )
-            errs.extend(np.sqrt(np.asarray(err_sums, dtype=np.float64).reshape(-1)))
+            var_sums = _aperture_varsum(aperture, variance, mask=bad, method=method)
+            errs.extend(np.sqrt(var_sums))
 
     return PhotometryResult(
         positions=np.asarray(positions, dtype=np.float64),
@@ -228,14 +251,23 @@ def apphot_annulus(
 
     Notes
     -----
-    If `error` is given, the error is propagated to magnitude error by
-    quadratically summing the error. The final source variance is `error**2`
-    plus ``apsum_npix*sky_stddev**2``. ``apsum_npix`` is the weighted in-image,
-    unmasked aperture support used for the aperture sum.
+    ``srcsum = apsum - apsum_npix*msky``, and
 
-    If `error` is not given, ``error=sqrt(data/gain + (rdnoise/gain)**2)`` is
-    used, assuming dark=0 (also, digitization error is ignored. cf. Merline &
-    Howell (1995) ExpA).
+        ``srcsum_err**2 = apsum_err**2 + (apsum_npix * dsky)**2``.
+
+    ``apsum = sum(w * data)`` with exact pixel-overlap weights ``w`` holds
+    **both the source and the sky signal** inside the aperture, so
+    ``apsum_err**2 = sum(w**2 * error**2)`` holds the noise of both, and
+    no separate in-aperture sky-noise term is added (different notation from
+    IRAF). ``apsum_npix = sum(w)`` is the in-image, unmasked aperture support.
+    ``dsky`` is the standard error of `msky` from `sky_fit`. A user-supplied
+    `error` without sky noise underestimates `srcsum_err`. Both terms assume
+    independent pixel noise.
+
+    Without `error`, use ``error=sqrt(data/gain + (rdnoise/gain)**2)`` on the
+    image before sky subtraction, so sky photon noise is included. This
+    assumes dark current is zero and ignores digitization error; see Merline &
+    Howell (1995), ExpA.
     """
 
     def _propagate_ccdmask(ccd, additional_mask=None):
@@ -364,6 +396,7 @@ def apphot_annulus(
         _phot["nsky"] = np.ones(len(_phot), dtype=int)
         _phot["nrej"] = np.zeros(len(_phot), dtype=int)
         _phot["ssky"] = np.zeros(len(_phot), dtype=float)
+        _phot["dsky"] = np.zeros(len(_phot), dtype=float)
 
     phot = _phot
 
@@ -374,20 +407,30 @@ def apphot_annulus(
     phot["nbadpix"] = np.atleast_1d(nbads)
     phot["srcsum"] = phot["apsum"] - phot["apsum_npix"] * phot["msky"]
 
-    # see, e.g., http://stsdas.stsci.edu/cgi-bin/gethelp.cgi?radprof.hlp
-    # Poisson + RDnoise (Poisson includes signal + sky + dark) :
+    # srcsum = apsum - A*msky with A = apsum_npix. The aperture and annulus
+    # pixels are disjoint (no covariance), so
+    #   Var(srcsum) = Var(apsum) + A**2 * Var(msky).
+    # * Var(apsum) = apsum_err**2 already holds every per-pixel noise in the
+    #   error map, **including sky photons** and read noise inside the
+    #   aperture.
+    # * msky is one number subtracted A times, so its error enters as A*dsky.
     var_errmap = phot["apsum_err"] ** 2
-    # Sum of apsum_npix Gaussians (kind of random walk):
-    var_skyrand = phot["apsum_npix"] * phot["ssky"] ** 2
-    # The CLT error (although not correct, let me denote it as "systematic"
-    # error for simplicity) of the mean estimation is ssky/sqrt(nsky), and that
-    # is propagated for apsum_npix pixels, so we have
-    # std = apsum_npix*ssky/sqrt(nsky), so
-    # variance is:
-    # var_sky = (phot["apsum_npix"] * phot["ssky"])**2 / phot["nsky"]
-    # This error term is used in IRAF APPHOT, but this is wrong and thus
-    # ignored here.
-    phot["srcsum_err"] = np.sqrt(var_errmap + var_skyrand)
+    dsky = np.asarray(phot["dsky"], dtype=float)
+    unknown_c = ~np.isfinite(dsky) & np.isfinite(np.asarray(phot["ssky"], dtype=float))
+    if np.any(unknown_c):
+        # Callable sky estimator: use the mean's c = 1, the Gaussian
+        # Cramer-Rao lower bound, so srcsum_err is then a lower bound.
+        dsky = np.where(
+            unknown_c,
+            np.asarray(phot["ssky"], dtype=float) / np.sqrt(phot["nsky"]),
+            dsky,
+        )
+        logger.warning(
+            "dsky is unknown for a callable sky method; srcsum_err uses "
+            "ssky/sqrt(nsky), a lower bound for Gaussian sky noise."
+        )
+    var_skyest = (np.asarray(phot["apsum_npix"], dtype=float) * dsky) ** 2
+    phot["srcsum_err"] = np.sqrt(var_errmap + var_skyest)
     snr = np.array(phot["srcsum"]) / np.array(phot["srcsum_err"])
     snr[snr < 0] = 0
     phot["mag"] = -2.5 * np.log10(phot["srcsum"] / t_exposure)

@@ -615,3 +615,59 @@ class TestSkyFitEllipticalAnnulus:
         result = sky_fit(uniform_100x100, an, method="mean")
         assert_allclose(result["msky"][0], 10.0, rtol=1e-10)
         assert_allclose(result["ssky"][0], 0.0, atol=1e-10)
+
+
+class TestSkyEstimateError:
+    """dsky = ssky * sqrt(c / nsky) for the estimator branch actually used."""
+
+    def test_c_values(self) -> None:
+        from astroimred.phot import background as bg
+
+        assert_allclose(bg._C_MEDIAN, np.pi / 2)
+        assert_allclose(bg._C_SEX, 25 * np.pi / 8 - 21 / 4)
+        assert_allclose(bg._C_MMM, 9 * np.pi / 2 - 8)
+
+    @pytest.mark.parametrize(
+        ("method", "c"),
+        [("mean", 1.0), ("median", np.pi / 2), ("MMM", 9 * np.pi / 2 - 8)],
+    )
+    def test_dsky_formula(self, method: str, c: float) -> None:
+        sky = np.random.default_rng(0).normal(10.0, 2.0, 500)
+        row = sky_fit(sky, method=method, sky_clipper=None)[0]
+        assert_allclose(row["dsky"], row["ssky"] * np.sqrt(c / row["nsky"]))
+
+    def test_dsky_follows_sex_and_iraf_fallbacks(self) -> None:
+        # Right-skewed: (mean - median)/std > 0.3, so "sex" uses the median.
+        skewed = np.array([0.0, 0, 0, 0, 1, 1, 10, 10, 10, 10])
+        row = sky_fit(skewed, method="sex", sky_clipper=None)[0]
+        assert_allclose(row["msky"], np.median(skewed))
+        assert_allclose(row["dsky"], row["ssky"] * np.sqrt(np.pi / 2 / row["nsky"]))
+        # Symmetric: "sex" uses 2.5*median - 1.5*mean.
+        symmetric = np.arange(11.0)
+        row = sky_fit(symmetric, method="sex", sky_clipper=None)[0]
+        c_sex = 25 * np.pi / 8 - 21 / 4
+        assert_allclose(row["dsky"], row["ssky"] * np.sqrt(c_sex / row["nsky"]))
+        # mean < median: "IRAF" uses the mean.
+        left = np.array([0.0, 8, 9, 9, 10, 10, 10])
+        row = sky_fit(left, method="IRAF", sky_clipper=None)[0]
+        assert_allclose(row["msky"], np.mean(left))
+        assert_allclose(row["dsky"], row["ssky"] / np.sqrt(row["nsky"]))
+
+    def test_dsky_is_nan_for_callable_and_empty(self) -> None:
+        row = sky_fit(np.arange(10.0), method=lambda x, s: np.median(x))[0]
+        assert np.isnan(row["dsky"])
+        row = sky_fit(np.full(5, np.nan), sky_clipper=None)[0]
+        assert np.isnan(row["dsky"]) and row["nsky"] == 0
+
+    @pytest.mark.parametrize("method", ["mean", "median", "sex", "MMM"])
+    def test_dsky_matches_monte_carlo_scatter(self, method: str) -> None:
+        """Measured Var(msky) agrees with dsky**2 for Gaussian sky noise."""
+        rng = np.random.default_rng(11)
+        msky, dsky = [], []
+        for _ in range(2000):
+            sky = rng.normal(0.0, 1.0, 400)
+            row = sky_fit(sky, method=method, sky_clipper=None, to_table=False)[0]
+            msky.append(row["msky"])
+            dsky.append(row["dsky"])
+        # 2000 samples give ~3% relative scatter in the variance; rtol is ~3 sigma.
+        assert_allclose(np.var(msky, ddof=1), np.mean(np.square(dsky)), rtol=0.1)

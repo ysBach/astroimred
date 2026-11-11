@@ -131,9 +131,9 @@ class TestApphotAnnulus:
         """
         Test error propagation formula.
 
-        srcsum_err^2 = apsum_err^2 + apsum_npix * ssky^2
+        srcsum_err^2 = apsum_err^2 + (apsum_npix * dsky)^2
 
-        For uniform image with ssky=0, srcsum_err ≈ apsum_err
+        For uniform image with ssky=0 (so dsky=0), srcsum_err ≈ apsum_err
         """
         ap = aap.CircAp((50, 50), r=5)
         an = aap.CircAn((50, 50), r_in=10, r_out=15)
@@ -389,7 +389,7 @@ class TestApphotErrorHandling:
 
 
 class TestPhotometerVariance:
-    """Variance retains linear fractional-pixel weighting across apertures."""
+    """Aperture-sum variance is ``sum(w**2 * error**2)`` for overlap weights w."""
 
     def test_multiple_apertures_fractional_errors(self) -> None:
         from astroimred.phot.apphot import photometer
@@ -402,8 +402,14 @@ class TestPhotometerVariance:
         apertures = [aap.CircAp((4, 4), r=r) for r in (1.5, 2.5)]
         result = photometer(data, apertures, error=error, mask=mask)
         areas = np.pi * np.array([1.5, 2.5]) ** 2 - 1
+        # The masked center pixel has w = 1, so it removes 1 from sum(w**2).
+        sum_w2 = np.array(
+            [np.sum(np.square(ap.weights_exact()[0])) - 1 for ap in apertures]
+        )
         assert_allclose(result.apsum, 7 * areas)
-        assert_allclose(result.apsum_err, 3 * np.sqrt(areas))
+        assert_allclose(result.apsum_err, 3 * np.sqrt(sum_w2))
+        # Partial pixels (w < 1) make sum(w**2) smaller than sum(w).
+        assert np.all(sum_w2 < areas)
         assert_allclose(result.apsum_npix, areas)
         assert_allclose(result.nbadpix, 1)
         assert_allclose(error, 3)
@@ -425,3 +431,33 @@ def test_photometer_empty_apertures_with_error() -> None:
     result = photometer(np.ones((3, 3)), [], error=np.ones((3, 3)))
     assert result.apsum.shape == (0,)
     assert result.apsum_err.shape == (0,)
+
+
+class TestSrcsumSkyError:
+    """srcsum_err**2 = apsum_err**2 + (apsum_npix * dsky)**2."""
+
+    @staticmethod
+    def _noisy_ccd(seed: int = 3) -> CCDData:
+        rng = np.random.default_rng(seed)
+        data = rng.normal(100.0, 5.0, (60, 60))
+        return CCDData(data, unit="adu", header={"GAIN": 1.0, "RDNOISE": 2.0})
+
+    def test_srcsum_err_uses_sky_estimate_error(self) -> None:
+        ap = aap.CircAp((30.2, 29.7), r=4)
+        an = aap.CircAn((30.2, 29.7), r_in=12, r_out=20)
+        result = apphot_annulus(self._noisy_ccd(), ap, an, pandas=False)
+        expected = np.hypot(result["apsum_err"], result["apsum_npix"] * result["dsky"])
+        assert_allclose(result["srcsum_err"], expected)
+        assert np.all(result["dsky"] > 0)
+
+    def test_callable_sky_method_uses_mean_lower_bound(self) -> None:
+        ap = aap.CircAp((30.2, 29.7), r=4)
+        an = aap.CircAn((30.2, 29.7), r_in=12, r_out=20)
+        sky_keys = {"method": lambda x, s: np.median(x)}
+        result = apphot_annulus(
+            self._noisy_ccd(), ap, an, sky_keys=sky_keys, pandas=False
+        )
+        assert np.isnan(result["dsky"][0])
+        dsky_low = result["ssky"] / np.sqrt(result["nsky"])
+        expected = np.hypot(result["apsum_err"], result["apsum_npix"] * dsky_low)
+        assert_allclose(result["srcsum_err"], expected)

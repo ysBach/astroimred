@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased
+
+### Breaking changes
+
+- Aperture-sum errors used `sqrt(sum(w * error**2))` and overestimated small
+  apertures; `apsum_err` and `radcum_profile` errors now use
+  `sqrt(sum(w**2 * error**2))` (`w`: pixel-overlap weight), as photutils 3.1 does.
+- `srcsum_err` counted sky noise twice and omitted the sky-estimate error; it
+  now uses `sqrt(apsum_err**2 + (apsum_npix * dsky)**2)`.
+- `sky_fit` and `apphot_annulus` add `dsky`, the standard error of `msky`
+  (`radial_profile`: `dpix`).
+
 ## 0.3.0 - 2026-06-18
 
 - Migrated aperture photometry and image combination to the `astroapers` and `imcombiners` backends; deprecated `combutil`.

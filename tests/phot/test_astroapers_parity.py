@@ -313,7 +313,10 @@ def test_apphot_annulus_matches_photutils_reference(parity_image):
     )
 
     assert_allclose(actual["apsum"], phot["aperture_sum"], rtol=2e-12)
-    assert_allclose(actual["apsum_err"], phot["aperture_sum_err"], rtol=2e-12)
+    # photutils < 3.1 used sum(w * err**2) (fixed in photutils PR #2398), so
+    # compare with sum(w**2 * err**2) from photutils' own exact weights.
+    w = phot_ap.to_mask(method="exact").to_image(parity_image.shape)
+    assert_allclose(actual["apsum_err"], np.sqrt(np.sum(w**2 * err**2)), rtol=2e-12)
     assert_allclose(
         actual["apsum_npix"], astro_ap.apsum_exact(parity_image)[1], rtol=2e-12
     )
