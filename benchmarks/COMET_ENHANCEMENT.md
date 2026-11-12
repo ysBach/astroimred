@@ -1,227 +1,76 @@
-# Comet enhancement performance
+# Comet enhancement benchmarks
 
-Read the whole-image results before choosing a backend. Faster ring reductions
-do not necessarily make the complete enhancement faster.
+Why `air` uses its current implementations.
 
-## Larson–Sekanina filtering
+- Machine: MBP 14" [2024, macOS 26.5, M4Pro(8P+4E/G20c/N16c/48G)], Python 3.13.11, NumPy 2.4.4, SciPy 1.17.1 (September 2026).
+- Time: median of warm runs; imports and input creation excluded.
+- Input: synthetic inverse-radius coma, seeded Gaussian noise, fractional center.
+- Speedup: (time of the compared option) / (time of what `air` uses).
+  Above 1 means `air`'s choice is faster.
+- Memory: peak `tracemalloc` allocation, not process RSS.
+- Every comparison gave the same outputs (`rtol=atol=1e-10`) and the same NaN masks.
 
-**801 × 801 images: 10–14 ms nearest, 34–38 ms bilinear.** Direct Cartesian
-sampling is 1.38–3.66× faster than the independent SciPy polar-coordinate
-reference in these cases. This comparison includes coordinate construction and
-strict missing-support handling; it does not isolate the interpolation kernel.
+## 1. Larson–Sekanina: NumPy vs. SciPy
 
-Measured September 9, 2026, on macOS ARM64: Python 3.13.11, NumPy 2.4.4,
-SciPy 1.17.1, reducers 0.4.0. Medians of five warm calls exclude imports and
-input creation. Inputs are seeded inverse-radius comae with noise, fractional
-centers, optional missing patches, `angle=10`, and `radial_shift=0` or `2`.
+- **`air`** (`viz.larson`): `larson_sekanina` samples the image at the rotated and shifted pixel positions with vectorized NumPy indexing.
+- **vs.:** `scipy.ndimage.map_coordinates` on a polar grid, written in the benchmark script.
+- Each row: range over 4 cases (`radial_shift=0` or `2`, with or without missing pixels); `angle=10`.
 
-All 16 cases (300 × 300 and 801 × 801) have identical finite/`NaN` masks.
-Nearest results match exactly; maximum bilinear difference is $2.1\times10^{-11}$
-(checked with `rtol=atol=1e-10`). Peak traced allocation at 801 × 801 is
-35–65 MiB nearest and 81–110 MiB bilinear, not process RSS. These measurements
-are local results, not universal speed guarantees.
+| Image | Interpolation | NumPy (used) | SciPy | Speedup |
+| --- | --- | ---: | ---: | ---: |
+| 300 × 300 | `nearest` | 1.2–1.8 ms | 4.5–4.8 ms | 2.58–3.83× |
+| 300 × 300 | `linear` | 4.4–5.0 ms | 7.0–7.1 ms | 1.43–1.62× |
+| 801 × 801 | `nearest` | 9.6–14.3 ms | 35.1–35.8 ms | 2.46–3.66× |
+| 801 × 801 | `linear` | 33.9–38.0 ms | 52.2–52.7 ms | 1.38–1.55× |
 
-The production path uses vectorized NumPy gathers and adds no dependencies.
-Reducers has no coordinate resampling operation; ndfiltrs provides fixed-kernel
-filters rather than this per-pixel mapping. Bilinear arithmetic preserves
-constant fields and ignores zero-weight missing neighbors.
+## 2. `reducers` (`rd`) vs. NumPy (`viz.enhance`, `viz._enhance_stats`)
 
-```bash
-uv run --no-sync python benchmarks/benchmark_larson_sekanina.py \
-    --sizes 300 801 --repeats 5 --output benchmarks/larson_sekanina_results.json
-```
+| Operation | `air` uses | vs. | Input | Speedup |
+| --- | --- | --- | --- | ---: |
+| Min and max | `rd.minmax(x, axis=0)`, one pass | `np.min(x, axis=0)` and `np.max(x, axis=0)`, two passes | 10 × 300 and 10 × 801, finite | 1.27–1.46× |
+| Finite count per ring | `rd.count_finite(x, axis=1)` | `np.count_nonzero(np.isfinite(x), axis=1)` | (1, 1) to (1500, 720), with NaN and inf | 1.3–2.1× |
 
-Raw measurements: [larson_sekanina_results.json](larson_sekanina_results.json).
+## 3. Ring statistics: fewer passes over the data (`viz._enhance_stats`)
 
-## Reducers 0.4: whole-image results
+- Input: rings of 148 × 360 and 398 × 360 values, with NaN and ±1e6 outliers.
 
-The API now calls these records `NormStats` (`return_stats=True`, `.stats`).
-The benchmark's `--profiles` flag and JSON labels retain their historical names.
+| Statistic | `air` uses | vs. | Speedup |
+| --- | --- | --- | ---: |
+| Mean and std | one call: `rd.nanstd(x, axis=1, ddof=1, return_mean=True)` | two calls: `rd.nanmean(x, axis=1)` and `rd.nanstd(x, axis=1, ddof=1)` | 1.15–1.28× |
+| Mode, median/MAD clipping | one median per iteration, reused for the center, the MAD, and the final value | separate medians for the center and the MAD in each iteration, plus one for the final value | 1.32–1.38× |
 
-**No material whole-image speed gain:** measured speedups were 0.98–1.02×.
-All compared baseline images matched exactly, including finite masks.
-Normalization statistics and estimation masks are opt-in.
+## 4. The speedup for total timing
+In sect 2/3 above (using `rd` v0.4.0),
+- **`air` uses:** `rd.minmax` (one call for mean & std, and one median per clipping iteration).
+- **vs.:** `np.min` and `np.max`, two calls for mean and std, and repeated medians.
+Even though statistics calculation is faster using `rd`, the total time is dominated by other parts (sampling, normalization, etc). The speedup is smaller than for the individual operations:
+- **Result:** 0.98–1.02× for all methods at 300 × 300 and 801 × 801.
+Still, there's no reason not to use `rd` for the statistics, since it is faster and more memory-efficient, and the speedup is larger for larger images and more iterations.
 
-Measured September 8, 2026, on macOS ARM64: Python 3.13.11, NumPy 2.4.4,
-reducers 0.4.0. Timings are medians of three warm runs against `5d29543`.
+## 5. Cost of `return_stats=True`
 
-| 801 × 801 clipped-mode input | Image only | With statistics | Added time |
-| --- | ---: | ---: | ---: |
-| Polar, hard mask | 861.6 ms | 867.6 ms | 0.69% |
-| Polar, hard + estimation masks | 899.9 ms | 912.0 ms | 1.34% |
-| Direct annuli, hard mask | 44.6 ms | 50.6 ms | 13.3% |
-| Direct annuli, hard + estimation masks | 46.3 ms | 49.2 ms | 6.4% |
+- **vs.:** the same call with `return_stats=True` and without it.
+- Input: 801 × 801, `statistic="mode"`, `sigma=(3, 3)`, `maxiters=5`.
 
-### Inputs and checks
+| Method | Masks | `return_stats=False` | `return_stats=True` | Added time |
+| --- | --- | ---: | ---: | ---: |
+| Polar | `mask` | 861.6 ms | 867.6 ms | 0.69% |
+| Polar | `mask` + `statistic_mask` | 899.9 ms | 912.0 ms | 1.34% |
+| Annular | `mask` | 44.6 ms | 50.6 ms | 13.3% |
+| Annular | `mask` + `statistic_mask` | 46.3 ms | 49.2 ms | 6.4% |
 
-| Setting | Value |
-| --- | --- |
-| Estimator and clipping, all rows | `statistic="mode", sigma=(3, 3), maxiters=5, clip_center="median", clip_scale="mad_std"` |
-| Polar sampling | `nrad=398, ntheta=360, subpixels=10` |
-| Annular sampling | Unit-width pixel-center bins, radius 0.5 through 398.5 |
-| Image | Seeded inverse-radius coma, Gaussian noise, fractional center |
-| Masks | Small excluded patches |
+## 6. Enhancement algorithms: optimized vs. naive implementation (`viz.enhance`, `viz.rvsf`)
 
-Statistics-enabled images matched image-only results at `rtol=atol=1e-10`
-with identical finite masks. Peak traced allocations increased by 0.006 MiB
-(polar) or 0.016 MiB (annular). These are not process RSS measurements.
+- **`air` uses:** constant-width RVSF evaluates one stencil; variable-width RVSF caches the stencil for each width; polar methods reuse 1-D coordinates.
+- **vs.:** the "naive" implementation of the same functions, without these three optimizations.
+- Both runs use `reducers` 0.3.0. Input: 801 × 801, `subpixels=10`; polar rows `nrad=398, ntheta=360`; clipped rows `sigma=3`.
 
-### Reproduce
-
-Reproduce, including 300 × 300 cases, with:
-
-```bash
-uv run --no-sync python benchmarks/benchmark_comet_enhancement.py \
-    --baseline-ref 5d29543 --sizes 300 801 --repeats 3 --profiles \
-    --output benchmarks/comet_profile_results.json
-```
-
-Raw measurements: [comet_profile_results.json](comet_profile_results.json).
-Small timing differences are local noise, not universal speed guarantees.
-
-## Reducers 0.4: individual reductions
-
-| Operation | Measured speedup | Input |
-| --- | --- | --- |
-| Ring mean/std | 1.15–1.28× | 148 × 360 and 398 × 360 arrays with missing values and injected outliers |
-| Ring mode with MAD clipping | 1.32–1.38× | Same ring arrays |
-| `minmax` versus separate NumPy extrema | 1.27–1.46× | Finite 10 × 300 and 10 × 801 arrays |
-
-Ring timings use three warmups and eleven timed calls. All compared results
-were exactly equal. Reconstruction now uses `reducers.minmax` for its finite
-coordinates. These operations are a small fraction of whole-image runtime.
-
-```bash
-uv run --no-sync python benchmarks/benchmark_comet_statistics.py \
-    --baseline-ref 5d29543 --output benchmarks/comet_statistics_results.json
-```
-
-Raw kernel measurements: [comet_statistics_results.json](comet_statistics_results.json).
-
-## Earlier optimization baseline
-
-Run from the repository root:
-
-```bash
-uv run --no-sync python benchmarks/benchmark_comet_enhancement.py \
-    --baseline-ref 2fc418a --sizes 300 801 --repeats 3
-```
-
-Before timing, the script checks unchanged methods against the pre-optimization
-commit. It compares complete finite/NaN masks and float64 outputs at
-`rtol=atol=1e-10`. This tolerance permits changed accumulation order; production
-code uses neither the tolerance nor benchmark-specific dispatch.
-
-### Measured results
-
-Measured September 8, 2026, on macOS ARM64: Python 3.13.11, NumPy 2.4.4,
-**reducers 0.3.0**. Medians of three warm runs exclude imports and input creation.
-The 801 × 801 input is a seeded synthetic inverse-radius coma with Gaussian
-noise and a fractional center. These are local measurements, not speed guarantees.
-
-| Operation | Before | After | Speedup |
-| --- | ---: | ---: | ---: |
-| Multiply by radius | 0.137 s | 0.117 s | 1.16× |
-| Polar median | 1.073 s | 0.867 s | 1.24× |
-| Polar sigma-clipped mean | 1.078 s | 0.875 s | 1.23× |
-| Polar renormalization | 1.088 s | 0.886 s | 1.23× |
-| RVSF, `a=1, b=0, n=1` | 3.012 s | 0.014 s | 216× |
-| RVSF, `a=1, b=1, n=0.3` | 3.444 s | 0.715 s | 4.82× |
-| RVSF, `a=0.5, b=0.8, n=1` | 3.416 s | 0.479 s | 7.13× |
-
-All rows use `subpixels=10`; polar rows use `nrad=398, ntheta=360`; clipped
-rows use `sigma=3`.
-
-The direct annular median takes 0.035 s for unit-width intervals from radius
-0.5 through 398.5. Its sampling differs from polar normalization, so this is
-not a parity comparison.
-
-Raw measurements, including 300 × 300 cases and maximum output differences, are in [comet_enhancement_results.json](comet_enhancement_results.json).
-
-### Why it changes
-
-1. Constant-width RVSF evaluates one stencil. Variable-width RVSF caches each
-   pixel's last rounded width and stencil value; unchanged widths need no
-   neighbor gathers.
-2. Radius and polar operations reuse one-dimensional coordinates.
-   Reconstruction skips pixels whose midpoint radii cannot all have valid rings.
-3. Ring statistics use reducers across rows. These timings used reducers 0.3.0;
-   the package now requires `reducers>=0.4.0`. Remeasure before attributing these
-   results to the newer backend.
-4. Direct annular normalization computes a radius map and groups pixels once,
-   avoiding an aperture bounding box for every ring.
-
-## Tradeoffs
-
-### Memory
-
-| Operation | Peak traced allocations before → after |
-| --- | --- |
-| Gentle-growth RVSF | 69.8 → 85.9 MiB |
-| Constant-width RVSF | Increased to 77.5 MiB |
-| Steep RVSF | Decreased to 54.6 MiB; fewer pixels remain valid |
-| Polar operations | 72.6 → 68.9 MiB |
-| Radius multiplication | 34.3 → 15.4 MiB |
-
-Caching uses memory. These are separate `tracemalloc` samples, not process peak RSS.
-
-### Sampling and estimators
-
-`annular_normalize` weights finite pixel centers equally within explicit radial
-intervals. CometCIEF-style normalization averages equal-angle polar samples and
-reconstructs them. Exact `astroapers` overlap weights would define a third
-estimator; they are not silently substituted.
-
-The NumPy radius map handles an outer radius far beyond the image without
-requiring a huge aperture mask.
-
-`statistic="mode"` uses the MMM approximation `3*median - 2*mean`, not an exact
-density mode. Strong outliers can make it negative or move it outside the
-observed range. Use explicit clipping or a custom statistic when appropriate.
-Clipping changes only the estimated divisor/location/spread; rejected bright
-features remain in the output.
-
-## Finite-count backend check
-
-Prefer reducers where parity and timings support it. On the same environment,
-`reducers.count_finite(values, axis=1)` took 0.82–114 microseconds versus
-1.11–237 microseconds for `np.count_nonzero(np.isfinite(values), axis=1)`.
-The tested ring arrays ranged from `(1, 1)` through `(1500, 720)` and included
-NaN and infinity. Speedups were 1.3–2.1× for this counting operation; this is
-not an end-to-end enhancement speedup. The reducers call also avoids the
-full-size boolean mask. Singleton and empty-ring behavior is unchanged.
-
-Reproduce the comparison in the existing project environment:
-
-```python
-import statistics
-import timeit
-
-import numpy as np
-import reducers as rd
-
-rng = np.random.default_rng(320981)
-for shape in [(1, 1), (1, 16), (1, 360), (140, 360), (398, 360), (1500, 720)]:
-    values = rng.normal(size=shape)
-    values.ravel()[::11] = np.nan
-    values.ravel()[5::37] = np.inf
-    before = lambda: np.count_nonzero(np.isfinite(values), axis=1)
-    after = lambda: rd.count_finite(values, axis=1)
-    np.testing.assert_array_equal(after(), before())
-    seconds = [
-        statistics.median(timeit.repeat(call, number=100, repeat=5)) / 100
-        for call in (before, after)
-    ]
-    print(shape, seconds, seconds[0] / seconds[1])
-```
-
-The earlier reducers 0.3.0 benchmark retained NumPy for coordinate extrema:
-that version used separate min and max reductions and was slower on most
-tested short-axis arrays. The reducers 0.4 measurements above supersede that
-choice. Backend preference does not imply a universal performance guarantee.
-
-`ndfiltrs.convolve` uses a fixed kernel, so it cannot directly express the
-spatially variable eight-tap RVSF stencil. A fixed-width replacement would
-also need to preserve the current weighted-difference arithmetic, which
-cancels constant fields before scaling. No ndfiltrs dependency is added for
-an unverified substitution.
+| Operation | naive version | Optimized (used) | Speedup | Memory, naive → optimized |
+| --- | ---: | ---: | ---: | ---: |
+| Multiply by radius | 0.137 s | 0.117 s | 1.16× | 34.3 → 15.4 MiB |
+| Polar median | 1.073 s | 0.867 s | 1.24× | 72.6 → 68.9 MiB |
+| Polar sigma-clipped mean | 1.078 s | 0.875 s | 1.23× | 72.6 → 68.9 MiB |
+| Polar renormalization | 1.088 s | 0.886 s | 1.23× | 72.6 → 68.9 MiB |
+| RVSF, `a=1, b=0, n=1` | 3.012 s | 0.014 s | 216× | 69.8 → 77.5 MiB |
+| RVSF, `a=1, b=1, n=0.3` | 3.444 s | 0.715 s | 4.82× | 69.8 → 85.9 MiB |
+| RVSF, `a=0.5, b=0.8, n=1` | 3.416 s | 0.479 s | 7.13× | 69.8 → 54.6 MiB |
