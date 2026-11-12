@@ -441,6 +441,7 @@ def imcombine(
     grow: float | None = None,
     output_sample_flags: StrPathLike | None = None,
 ) -> CCDData | dict | tuple:
+    """Combine FITS files or CCDData inputs with imcombiners."""
     if diagnostics not in (None, "simple", "full"):
         raise ValueError("diagnostics must be None, 'simple', or 'full'.")
     if grow is not None:
@@ -615,6 +616,7 @@ def imcombine(
             zero_section=zero_section,
             scale_section=scale_section,
             scales=scales,
+            mask=mask,
         )
 
     log_zsw_table(items, zeros, scales, weights, verbose)
@@ -939,7 +941,10 @@ imcombine.__doc__ = f"""A FITS-file helper for ``imcombiners.ndcombine``.
 
     mask : `~numpy.ndarray`, optional.
         The mask of bad pixels. If given, it must satisfy
-        ``mask.shape[0]`` identical to the number of images.
+        ``mask.shape[0]`` identical to the number of images. Each plane uses
+        the corresponding input's coordinates after `trimsec`, before offsets.
+        It is combined with CCDData masks or the selected FITS mask extension
+        for normalization statistics as well as rejection and combination.
 
         .. note::
             If the user ever want to use masking, it's more convenient to use
@@ -966,6 +971,9 @@ imcombine.__doc__ = f"""A FITS-file helper for ``imcombiners.ndcombine``.
         Finite, nonzero weights for mean/average combination; signs are retained.
         Use a shared scalar, one value per image, or a statistic such as
         ``"mean"`` computed within `scale_section` on each trimmed input.
+        Statistics exclude input-masked and nonfinite pixels, as for `zero`
+        and `scale`. A callable receives an ``(M, 1)`` array with excluded
+        samples set to NaN and must return a finite, nonzero value.
         Vectors follow sorted file-path order; CCDData lists retain input order.
         Each pixel uses only finite, unmasked, unrejected samples; `None` gives
         equal weights. No valid samples gives NaN; valid weights summing to zero
@@ -1014,15 +1022,13 @@ imcombine.__doc__ = f"""A FITS-file helper for ``imcombiners.ndcombine``.
         `None` or non-positive values disable chunking.
 
     output : path-like, optional
-        The path to the final combined FITS file. It has dtype of `dtype` and
-        dimension identical to each input image. Optional keyword arguments for
-        ``fits.writeto()`` can be provided as ``**kwargs``.
+        Write the final combined image here. `dtype` controls the output data
+        type; offsets can change the output shape.
 
-    output_xxx : path-like, optional
-        The output path to the mask, number of rejected pixels at each
-        position, ``std`` diagnostic, lower and upper bounds for rejection,
-        and integer output flags (see `mask_rej`, `mask_thresh`, `std`, `low`,
-        `upp`, `nit`, and `output_flags` in Returns.)
+    output_mask, output_nrej, output_std, output_low, output_upp, output_flags, output_sample_flags : path-like, optional
+        FITS paths for the combined mask, rejection count, spread, rejection
+        bounds, output flags, and per-sample flags, respectively. Each `None`
+        default skips writing that diagnostic. See Returns for their meanings.
 
     output_sample_flags : path-like, optional
         Write the stack-shaped `uint8` sample flags as a FITS image and enable
@@ -1035,10 +1041,9 @@ imcombine.__doc__ = f"""A FITS-file helper for ``imcombiners.ndcombine``.
 
     Returns
     -------
-    Returns the followings depending on `full` and `return_dict`.
-
     comb : `astropy.nddata.CCDData` (dtype `dtype`)
-        The combined data.
+        The combined data. Returned alone without diagnostics; otherwise it
+        is the first tuple entry or the ``"comb"`` dictionary value.
 
     {docstrings.NDCOMB_RETURNS_COMMON(indent=4)}
 
@@ -1053,5 +1058,4 @@ imcombine.__doc__ = f"""A FITS-file helper for ``imcombiners.ndcombine``.
         `output_flags` uses a separate per-output-pixel flag namespace;
         its bit 16 indicates that growth added at least one rejection there.
 
-    {docstrings.IMCOMBINE_LINK(indent=4)}
     """

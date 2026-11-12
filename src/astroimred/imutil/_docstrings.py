@@ -171,6 +171,13 @@ scale_to_0th : `bool`, optional.
 zero_section, scale_section : `str`, optional.
     The sections used for zeroing and scaling. These must be in FITS section
     format, and are the sections **AFTER** trimming based on `trimsec`.
+    Statistical zero/scale/weight values exclude input-masked and nonfinite
+    pixels. A section with no finite unmasked pixels raises `ValueError` naming
+    the parameter and input index. Numeric calibration values are unaffected.
+    Thresholds and algorithm rejections do not select normalization samples.
+    Callable statistics receive the selected pixels as an ``(M, 1)`` array
+    with excluded samples replaced by NaN; use a NaN-aware statistic and
+    return one finite value (nonzero for scale or weight).
 
 zero_kw, scale_kw : `dict`
     Used only if `scale` or `zero` are sigma-clipped mean, median, etc (ending with ``_sc`` such as
@@ -201,14 +208,14 @@ ddof : `int`, optional.
 nkeep : `float` or `int`, optional.
     The minimum number of pixels that should be left after rejection. If ``nkeep < 1``, it is regarded
     as fraction of the total number of pixels along the axis to combine. This corresponds to *positive*
-    `nkeep` parameter of IRAF `IMCOMBINE`_. If number of remaining non-nan value is fewer than
+    `nkeep` parameter of IRAF [IMCOMBINE](https://iraf.readthedocs.io/en/latest/tasks/images/immatch/imcombine.html). If number of remaining non-nan value is fewer than
     `nkeep`, the masks at that position will be reverted to the previous iteration, and rejection
     code will be added by number 4.
 
 maxrej : `float` or `int`, optional.
     The maximum number of pixels that can be rejected during the rejection. If ``maxrej < 1``, it is
     regarded as fraction of the total number of pixels along the axis to combine. This corresponds to
-    *negative* `nkeep` parameter of IRAF `IMCOMBINE`_. In IRAF, only one of `nkeep` and `maxrej`
+    *negative* `nkeep` parameter of IRAF [IMCOMBINE](https://iraf.readthedocs.io/en/latest/tasks/images/immatch/imcombine.html). In IRAF, only one of `nkeep` and `maxrej`
     can be set. If number of rejected pixels at a position exceeds `maxrej`, the masks at that
     position will be reverted to the previous iteration, and rejection code will be added by number 8.
 
@@ -269,7 +276,8 @@ combine: `str`, optional.
 
     .. note::
         The lower median means the median which takes the lower value when even number of data is left.
-        This is suggested to be robust against cosmic-ray hit according to IRAF IMCOMBINE_ manual.
+        This is suggested to be robust against cosmic-ray hit according to the IRAF
+        [IMCOMBINE manual](https://iraf.readthedocs.io/en/latest/tasks/images/immatch/imcombine.html).
         The combine/rejection kernels are provided by ``imcombiners``.""",
         indent,
     )
@@ -342,7 +350,8 @@ offsets : `str` or (n, m)-d array
     output image's shape.
 
     .. note::
-        Though IRAF IMCOMBINE_ says it calculates offsets from the 0-th image center if
+        Though the IRAF [IMCOMBINE manual](https://iraf.readthedocs.io/en/latest/tasks/images/immatch/imcombine.html)
+        says it calculates offsets from the 0-th image center if
         ``offsets="wcs"``, it seems it acutally uses CRPIX from the header... I couldn't find how
         IRAF does offset calculation for astropy.wcs.WCS, it's not reproducible using rounding. Even using astropy.wcs.WCS info
         correctly, it's not reproducible. Also, if we only use CRPIX, the offset calculations are

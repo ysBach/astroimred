@@ -1,0 +1,380 @@
+{
+  "platform": "macOS-26.6-arm64-arm-64bit-Mach-O",
+  "python": "3.13.11",
+  "versions": {
+    "numpy": "2.4.4",
+    "scipy": "1.17.1",
+    "reducers": "0.4.0"
+  },
+  "repeats": 5,
+  "records": [
+    {
+      "shape": [
+        300,
+        300
+      ],
+      "masked": false,
+      "parameters": {
+        "angle": 10.0,
+        "radial_shift": 0.0,
+        "interpolation": "nearest"
+      },
+      "scipy_reference": {
+        "median_seconds": 0.004495290922932327,
+        "peak_traced_mib": 11.933612823486328
+      },
+      "current": {
+        "median_seconds": 0.0011744159273803234,
+        "peak_traced_mib": 4.994397163391113
+      },
+      "speedup": 3.8276821849305263,
+      "finite_mask_equal": true,
+      "max_absolute_difference": 0.0
+    },
+    {
+      "shape": [
+        300,
+        300
+      ],
+      "masked": false,
+      "parameters": {
+        "angle": 10.0,
+        "radial_shift": 2.0,
+        "interpolation": "nearest"
+      },
+      "scipy_reference": {
+        "median_seconds": 0.004521084018051624,
+        "peak_traced_mib": 11.933612823486328
+      },
+      "current": {
+        "median_seconds": 0.0016842500772327185,
+        "peak_traced_mib": 9.110137939453125
+      },
+      "speedup": 2.6843305986245953,
+      "finite_mask_equal": true,
+      "max_absolute_difference": 0.0
+    },
+    {
+      "shape": [
+        300,
+        300
+      ],
+      "masked": false,
+      "parameters": {
+        "angle": 10.0,
+        "radial_shift": 0.0,
+        "interpolation": "linear"
+      },
+      "scipy_reference": {
+        "median_seconds": 0.007071124971844256,
+        "peak_traced_mib": 11.933612823486328
+      },
+      "current": {
+        "median_seconds": 0.0043539999751374125,
+        "peak_traced_mib": 11.345547676086426
+      },
+      "speedup": 1.6240525981218203,
+      "finite_mask_equal": true,
+      "max_absolute_difference": 7.275957614183426e-12
+    },
+    {
+      "shape": [
+        300,
+        300
+      ],
+      "masked": false,
+      "parameters": {
+        "angle": 10.0,
+        "radial_shift": 2.0,
+        "interpolation": "linear"
+      },
+      "scipy_reference": {
+        "median_seconds": 0.007111957995221019,
+        "peak_traced_mib": 11.933612823486328
+      },
+      "current": {
+        "median_seconds": 0.004986541927792132,
+        "peak_traced_mib": 15.4613618850708
+      },
+      "speedup": 1.426230461551528,
+      "finite_mask_equal": true,
+      "max_absolute_difference": 1.0970779840135947e-11
+    },
+    {
+      "shape": [
+        300,
+        300
+      ],
+      "masked": true,
+      "parameters": {
+        "angle": 10.0,
+        "radial_shift": 0.0,
+        "interpolation": "nearest"
+      },
+      "scipy_reference": {
+        "median_seconds": 0.004763124976307154,
+        "peak_traced_mib": 11.933565139770508
+      },
+      "current": {
+        "median_seconds": 0.001337458030320704,
+        "peak_traced_mib": 4.994397163391113
+      },
+      "speedup": 3.561326687137257,
+      "finite_mask_equal": true,
+      "max_absolute_difference": 0.0
+    },
+    {
+      "shape": [
+        300,
+        300
+      ],
+      "masked": true,
+      "parameters": {
+        "angle": 10.0,
+        "radial_shift": 2.0,
+        "interpolation": "nearest"
+      },
+      "scipy_reference": {
+        "median_seconds": 0.004608541959896684,
+        "peak_traced_mib": 11.933565139770508
+      },
+      "current": {
+        "median_seconds": 0.0017877910286188126,
+        "peak_traced_mib": 9.110137939453125
+      },
+      "speedup": 2.5777855946939665,
+      "finite_mask_equal": true,
+      "max_absolute_difference": 0.0
+    },
+    {
+      "shape": [
+        300,
+        300
+      ],
+      "masked": true,
+      "parameters": {
+        "angle": 10.0,
+        "radial_shift": 0.0,
+        "interpolation": "linear"
+      },
+      "scipy_reference": {
+        "median_seconds": 0.007095332955941558,
+        "peak_traced_mib": 11.933612823486328
+      },
+      "current": {
+        "median_seconds": 0.0044111249735578895,
+        "peak_traced_mib": 11.345547676086426
+      },
+      "speedup": 1.6085087134175349,
+      "finite_mask_equal": true,
+      "max_absolute_difference": 7.275957614183426e-12
+    },
+    {
+      "shape": [
+        300,
+        300
+      ],
+      "masked": true,
+      "parameters": {
+        "angle": 10.0,
+        "radial_shift": 2.0,
+        "interpolation": "linear"
+      },
+      "scipy_reference": {
+        "median_seconds": 0.006974916905164719,
+        "peak_traced_mib": 11.933565139770508
+      },
+      "current": {
+        "median_seconds": 0.004813542007468641,
+        "peak_traced_mib": 15.461318969726562
+      },
+      "speedup": 1.4490196396629573,
+      "finite_mask_equal": true,
+      "max_absolute_difference": 1.0970779840135947e-11
+    },
+    {
+      "shape": [
+        801,
+        801
+      ],
+      "masked": false,
+      "parameters": {
+        "angle": 10.0,
+        "radial_shift": 0.0,
+        "interpolation": "nearest"
+      },
+      "scipy_reference": {
+        "median_seconds": 0.03559229103848338,
+        "peak_traced_mib": 85.05424404144287
+      },
+      "current": {
+        "median_seconds": 0.009871041984297335,
+        "peak_traced_mib": 35.52041053771973
+      },
+      "speedup": 3.605727854779963,
+      "finite_mask_equal": true,
+      "max_absolute_difference": 0.0
+    },
+    {
+      "shape": [
+        801,
+        801
+      ],
+      "masked": false,
+      "parameters": {
+        "angle": 10.0,
+        "radial_shift": 2.0,
+        "interpolation": "nearest"
+      },
+      "scipy_reference": {
+        "median_seconds": 0.03581149992533028,
+        "peak_traced_mib": 85.05424404144287
+      },
+      "current": {
+        "median_seconds": 0.013945333892479539,
+        "peak_traced_mib": 64.87888240814209
+      },
+      "speedup": 2.5679915734855774,
+      "finite_mask_equal": true,
+      "max_absolute_difference": 0.0
+    },
+    {
+      "shape": [
+        801,
+        801
+      ],
+      "masked": false,
+      "parameters": {
+        "angle": 10.0,
+        "radial_shift": 0.0,
+        "interpolation": "linear"
+      },
+      "scipy_reference": {
+        "median_seconds": 0.052160375053063035,
+        "peak_traced_mib": 85.05419635772705
+      },
+      "current": {
+        "median_seconds": 0.034381499979645014,
+        "peak_traced_mib": 80.79913425445557
+      },
+      "speedup": 1.5171058587887005,
+      "finite_mask_equal": true,
+      "max_absolute_difference": 8.469669410260394e-12
+    },
+    {
+      "shape": [
+        801,
+        801
+      ],
+      "masked": false,
+      "parameters": {
+        "angle": 10.0,
+        "radial_shift": 2.0,
+        "interpolation": "linear"
+      },
+      "scipy_reference": {
+        "median_seconds": 0.05269808310549706,
+        "peak_traced_mib": 85.05424404144287
+      },
+      "current": {
+        "median_seconds": 0.03722850000485778,
+        "peak_traced_mib": 110.15755081176758
+      },
+      "speedup": 1.415530657926608,
+      "finite_mask_equal": true,
+      "max_absolute_difference": 2.0236257114447653e-11
+    },
+    {
+      "shape": [
+        801,
+        801
+      ],
+      "masked": true,
+      "parameters": {
+        "angle": 10.0,
+        "radial_shift": 0.0,
+        "interpolation": "nearest"
+      },
+      "scipy_reference": {
+        "median_seconds": 0.03512012504506856,
+        "peak_traced_mib": 85.05424404144287
+      },
+      "current": {
+        "median_seconds": 0.009594333008863032,
+        "peak_traced_mib": 35.520453453063965
+      },
+      "speedup": 3.660507198637505,
+      "finite_mask_equal": true,
+      "max_absolute_difference": 0.0
+    },
+    {
+      "shape": [
+        801,
+        801
+      ],
+      "masked": true,
+      "parameters": {
+        "angle": 10.0,
+        "radial_shift": 2.0,
+        "interpolation": "nearest"
+      },
+      "scipy_reference": {
+        "median_seconds": 0.035200417041778564,
+        "peak_traced_mib": 85.05424404144287
+      },
+      "current": {
+        "median_seconds": 0.014320540940389037,
+        "peak_traced_mib": 64.87888240814209
+      },
+      "speedup": 2.4580368289371544,
+      "finite_mask_equal": true,
+      "max_absolute_difference": 0.0
+    },
+    {
+      "shape": [
+        801,
+        801
+      ],
+      "masked": true,
+      "parameters": {
+        "angle": 10.0,
+        "radial_shift": 0.0,
+        "interpolation": "linear"
+      },
+      "scipy_reference": {
+        "median_seconds": 0.05244358303025365,
+        "peak_traced_mib": 85.05424404144287
+      },
+      "current": {
+        "median_seconds": 0.03390137490350753,
+        "peak_traced_mib": 80.79913425445557
+      },
+      "speedup": 1.5469456085342335,
+      "finite_mask_equal": true,
+      "max_absolute_difference": 8.469669410260394e-12
+    },
+    {
+      "shape": [
+        801,
+        801
+      ],
+      "masked": true,
+      "parameters": {
+        "angle": 10.0,
+        "radial_shift": 2.0,
+        "interpolation": "linear"
+      },
+      "scipy_reference": {
+        "median_seconds": 0.052308375015854836,
+        "peak_traced_mib": 85.05419635772705
+      },
+      "current": {
+        "median_seconds": 0.037979083019308746,
+        "peak_traced_mib": 110.15755081176758
+      },
+      "speedup": 1.3772943119574796,
+      "finite_mask_equal": true,
+      "max_absolute_difference": 2.0236257114447653e-11
+    }
+  ]
+}

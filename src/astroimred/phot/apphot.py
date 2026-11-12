@@ -65,7 +65,7 @@ def _aperture_varsum(
 
     The aperture sum is ``S = sum(w * data)`` with fixed overlap weights ``w``.
     For independent pixel noise, ``Var(S) = sum(w**2 * variance)``. Center
-    sampling has ``w`` either {0, 1}, so ``w**2 == w``.
+    sampling has ``w`` in {0, 1}, so ``w**2 == w`` there.
     """
     if method == "center":
         return np.asarray(
@@ -183,71 +183,72 @@ def apphot_annulus(
     pandas: bool = True,
     **kwargs,
 ) -> pd.DataFrame | QTable:
-    """Do aperture photometry using annulus.
+    """Measure aperture fluxes with an optional annular sky estimate.
 
     Parameters
     ----------
     ccd : `~astropy.nddata.CCDData`
-        The data to be photometried. Preferably in ADU.
+        Image data, preferably in ADU.
 
     aperture, annulus : astroapers aperture or list of such, optional
-        The aperture and annulus to be used for aperture photometry.
+        Aperture(s) and the optional sky annulus for the measurement.
 
         .. note::
-            For a multi-position aperture, use, e.g.,
+            For multiple positions, use one aperture with multiple positions,
+            for example
             ``aap.CircAp(positions, r=10)``. For multiple radii, use, e.g.,
             ``[aap.CircAp(positions, r=r) for r in radii]``.
 
     gain : str, float, optional
-        The gain of the CCD in electrons per ADU. If str, gain will be
-        found from the header by tke key, and if not found, defaults to 1. If
-        float, it should be in electrons per ADU. Used only if `error` is
-        `None`.
-        Default is ``'GAIN'``.
+        CCD gain in electrons per ADU. A string names the header keyword; a
+        missing keyword defaults to `1`. A float is used directly. Used only
+        when `error` is `None`. Default is ``"GAIN"``.
 
     rdnoise : str, float, optional
-        The readout noise of the CCD in electrons. If str, readout noise will
-        be found from the header by tke key, and if not found, defaults to ``0``.
-        If float, it should be in electrons. Used only if `error` is `None`.
-        Default is ``'RDNOISE'``.
+        Read noise in electrons. A string names the header keyword; a missing
+        keyword defaults to `0`. A float is used directly. Used only when
+        `error` is `None`. Default is ``"RDNOISE"``.
+
+    t_exposure : float, optional
+        Exposure time used to scale the reported magnitude. If `None`, read
+        `exposure_key` from a `CCDData` header; otherwise the fallback is `1`.
 
     exposure_key : str, optional
-        The key for exposure time. Together with `t_exposure_unit`, the
-        function will normalize the signal to exposure time. If `t_exposure`
-        is not None, this will be ignored.
+        Header keyword for the exposure time when `t_exposure` is `None`.
+        Ignored when `t_exposure` is supplied. Default is ``"EXPTIME"``.
 
     error : array-like or `~astropy.units.Quantity`, optional
-        The pixel-wise error map to be propagated to magnitude error.
+        Pixel-wise error map to propagate to source-sum and magnitude errors.
 
     sky_keys : dict, optional
-        args/kwargs of `sky_fit`. If `None`(default), 3-sigma 5-iters clipping
-        with ``ddof=1`` is performed, and then the modal sky value is estimated
-        by SExtractor estimator; see `~astroimred.phot.background.sky_fit`.
+        Keyword arguments for `sky_fit`. If `None`, use 3-sigma, 5-iteration
+        clipping with ``ddof=1`` and the SExtractor sky estimator; see
+        `~astroimred.phot.background.sky_fit`.
 
     sky_min : float, optional
-        The minimum value of the sky to be used for sky subtraction.
+        Minimum sky value used for sky subtraction.
 
     npix_mask_ap : int, optional
-        If the weighted masked aperture support is greater than `npix_mask_ap`,
-        the column ``"bad"`` will be marked as ``1``.
+        Mark ``"bad"`` as `1` when weighted masked aperture support exceeds
+        this value.
 
         .. note::
-            Currently it is not checked for annulus (works only for aperture)
+            The annulus is not checked; this applies only to the aperture.
 
     pandas : bool, optional
-        Whether to convert to `~pandas.DataFrame`.
+        Return a `~pandas.DataFrame` when `True`; otherwise return a QTable.
+        Default is `True`.
 
     **kwargs :
-        Reserved for backward compatibility. ``method`` may be supplied and
-        defaults to ``"exact"``.
+        Reserved for backward compatibility. Supply ``method`` here to select
+        ``"exact"`` (default) or ``"center"`` aperture sampling.
 
     Returns
     -------
-    phot_f: `~astropy.table.Table`
-        The photometry result.
-
-    bad code
-      * 1 (2^0) : weighted masked support ``> npix_mask_ap`` within aperture.
+    phot_f : pandas.DataFrame or astropy.table.QTable
+        Photometry results. The `bad` column is `1` when weighted masked
+        aperture support exceeds `npix_mask_ap`, and `0` otherwise. The return
+        type follows `pandas`.
 
     Notes
     -----
@@ -256,10 +257,10 @@ def apphot_annulus(
         ``srcsum_err**2 = apsum_err**2 + (apsum_npix * dsky)**2``.
 
     ``apsum = sum(w * data)`` with exact pixel-overlap weights ``w`` holds
-    **both the source and the sky signal** inside the aperture, so
+    both the source and the sky signal inside the aperture, so
     ``apsum_err**2 = sum(w**2 * error**2)`` holds the noise of both, and
-    no separate in-aperture sky-noise term is added (different notation from
-    IRAF). ``apsum_npix = sum(w)`` is the in-image, unmasked aperture support.
+    no separate in-aperture sky-noise term is added.
+    ``apsum_npix = sum(w)`` is the in-image, unmasked aperture support.
     ``dsky`` is the standard error of `msky` from `sky_fit`. A user-supplied
     `error` without sky noise underestimates `srcsum_err`. Both terms assume
     independent pixel noise.
@@ -408,12 +409,10 @@ def apphot_annulus(
     phot["srcsum"] = phot["apsum"] - phot["apsum_npix"] * phot["msky"]
 
     # srcsum = apsum - A*msky with A = apsum_npix. The aperture and annulus
-    # pixels are disjoint (no covariance), so
-    #   Var(srcsum) = Var(apsum) + A**2 * Var(msky).
-    # * Var(apsum) = apsum_err**2 already holds every per-pixel noise in the
-    #   error map, **including sky photons** and read noise inside the
-    #   aperture.
-    # * msky is one number subtracted A times, so its error enters as A*dsky.
+    # pixels are disjoint, so Var(srcsum) = Var(apsum) + A**2 * Var(msky).
+    # - Var(apsum) = apsum_err**2 already holds every per-pixel noise in the
+    #   error map, including sky photons and read noise inside the aperture.
+    # - msky is one number subtracted A times, so its error enters as A*dsky.
     var_errmap = phot["apsum_err"] ** 2
     dsky = np.asarray(phot["dsky"], dtype=float)
     unknown_c = ~np.isfinite(dsky) & np.isfinite(np.asarray(phot["ssky"], dtype=float))

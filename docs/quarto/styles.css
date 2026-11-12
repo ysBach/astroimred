@@ -1,0 +1,7 @@
+/* Shared reading layout: short lines, clear task links, and readable signatures. */
+main.content { max-width: 64rem; }
+.quarto-title-block .subtitle { color: #526477; }
+.task-links { margin: 1.5rem 0; }
+.task-links td:first-child { font-weight: 600; }
+.doc-signature { overflow-x: auto; }
+.cell-output-display { margin-bottom: 1.5rem; }

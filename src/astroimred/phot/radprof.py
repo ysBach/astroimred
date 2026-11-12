@@ -105,43 +105,51 @@ def radial_profile(
     add_center: bool = False,
     **kwargs,
 ) -> tuple[pd.DataFrame, float]:
-    """Calculate radial profile of the image.
+    """Calculate an annular radial profile of an image.
 
     Parameters
     ----------
-    im : 2D array
-        The image data.
-    center : tuple
-        The (x, y) coordinates of the center.
-    radii : 1D array
-        The radii of the annulus.
-    mask : 2D array, optional
-        A mask to apply to the image. Pixels with True values will be ignored.
-        Default is `None`.
+    im : `~astropy.nddata.CCDData` or ndarray
+        Image data.
+    center : tuple of float
+        Profile center in ``(x, y)`` order.
+    radii : 1-D array
+        Annulus centers in pixels. Each value is paired with the corresponding
+        `thickness`.
     thickness : int or array of int, optional
-        The thickness(es) of the annulus for the radial profile.
-        Default is ``1``.
+        Annulus width(s) in pixels. Overlapping annuli are allowed. Default is
+        `1`.
+    mask : 2-D array, optional
+        Boolean mask; `True` pixels are ignored. Default is `None`.
     norm_by_center : bool, optional
-        If `True`, normalize the profile by the value at the center position.
-        Default is `False`.
+        Divide profile values and spreads by the absolute center pixel value
+        when `True`. Default is `False`.
     add_center : bool, optional
-        If `True`, include the center pixel value as the first entry in the
-        profile (r = 0, mpix = center pixel value, spix = 0, npix = 1).
-        Default is `False`.
-    **kwargs : dict, optional
-        Additional keyword arguments to pass to the `sky_fit` function.
+        Prepend the center pixel as
+        ``r=0, mpix=center value, spix=0, npix=1`` when `True`. Default is
+        `False`.
+    **kwargs :
+        Additional keyword arguments for `sky_fit`.
 
     Returns
     -------
     profs : pandas.DataFrame
         Radial profile with columns ``r``, ``mpix``, ``spix``, ``dpix``,
-        ``npix``, ``nrej``, and ``spix_n``. ``dpix`` is the standard error
-        of ``mpix`` (`sky_fit` ``dsky``); ``spix_n = spix / sqrt(npix)``
-        equals ``dpix`` only for the mean estimator.
+        ``npix``, ``nrej``, and ``spix_n``. The first five are the radius,
+        estimated value, sample spread, standard error of ``mpix`` (`sky_fit`
+        ``dsky``), and used pixel support; ``nrej`` is the number rejected by
+        `sky_fit`, and ``spix_n`` is ``spix / sqrt(npix)``, which equals
+        ``dpix`` only for the mean estimator.
     center_val : float
         The value of the pixel at the center position.
 
-    Example
+    Notes
+    -----
+    Each annulus delegates its statistics to `sky_fit`; this function has no
+    separate mode estimator. Visualization's `annular_normalize` instead takes
+    nonoverlapping bin edges and transforms the original image.
+
+    Examples
     -------
     >>> profs, center_val = radial_profile(im, center=(50, 50), radii=np.arange(1, 11), thickness=2)
     >>> profs
@@ -202,54 +210,48 @@ def radcum_profile(
     add_npix=True,
     norm_by_last=False,
 ):
-    """Calculate cumulative radial profile of the image using circular apertures.
+    """Calculate a cumulative radial profile with circular apertures.
 
     Parameters
     ----------
-    im : 2D array
-        The image data.
-    center : tuple
-        The (x, y) coordinates of the center.
-    radii : 1D array
-        The radii of the circular apertures.
-    mask : 2D array, optional
-        A mask to apply to the image. Pixels with True values will be ignored.
-        Default is `None`.
+    im : 2-D array
+        Image data.
+    center : tuple of float
+        Aperture center in ``(x, y)`` order.
+    radii : 1-D array
+        Radii of the circular apertures.
+    mask : 2-D array, optional
+        Boolean mask; `True` pixels are ignored. Default is `None`.
     var : 2D array, optional
-        The variance map of the image. If given, aperture sum of variance is
-        also computed. Mutually exclusive with `err`.
-        Default is `None`.
+        Variance map. Its aperture sum is also computed. Mutually exclusive
+        with `err`. Default is `None`.
     err : 2D array, optional
-        The error (uncertainty) map of the image. Converted to variance
-        internally (``variance = error**2``). Mutually exclusive with `var`.
-        Default is `None`.
+        Error map, converted internally to variance (``variance = error**2``).
+        Mutually exclusive with `var`. Default is `None`.
     return_var : bool, optional
-        If `True`, return the aperture sum of the variance map as ``var``
-        (skipping the sqrt). If `False` (default), return the square root of
-        the variance sum as ``err`` instead.
-        Requires either `var` or `err` to be provided.
-        Default is `False`.
+        If `True`, return the aperture sum as ``var`` without taking a square
+        root. If `False` (default), return its square root as ``err``. Requires
+        either `var` or `err`.
     add_npix : bool, optional
-        If `True` (default), include the ``npix`` column (weighted unmasked
-        aperture support within each aperture). Set to `False` to skip the
-        ``to_mask`` computation when pixel counts are not needed.
-        Default is `True`.
+        Include ``npix`` (weighted unmasked aperture support) when `True`
+        (default). Set `False` to skip the `to_mask` computation when counts
+        are not needed.
     norm_by_last : bool, optional
-        If `True`, normalize all flux columns by the value at the largest radius.
-        Default is `False`.
+        Normalize all flux columns by the value at the largest radius when
+        `True`. Default is `False`.
 
     Returns
     -------
     profs : pandas.DataFrame
-        A DataFrame with columns:
+        DataFrame with these columns:
 
         - ``r``    : aperture radius
         - ``apsum``: aperture sum within radius r
-        - ``npix`` : weighted unmasked aperture support (only if ``add_npix=True``)
+        - ``npix`` : weighted unmasked aperture support (if ``add_npix=True``)
         - ``var``  : variance of ``apsum``, ``sum(w**2 * var)`` with exact
-          overlap weights ``w`` (only if ``return_var=True`` and variance/error given)
-        - ``err``  : square root of ``var`` (only if ``return_var=False`` and
-          variance/error given)
+          overlap weights ``w`` (if ``return_var=True`` and `var`/`err` is given)
+        - ``err``  : square root of ``var`` (if ``return_var=False`` and
+          `var`/`err` is given)
     """
     if var is not None and err is not None:
         raise ValueError("Provide either `var` or `err`, not both.")
@@ -322,15 +324,14 @@ def radcum_profile(
 
 
 def ee_radius(im, center, fraction=0.5, r_min=0.5, r_max=None, sum_is_unity=False):
-    """Find the radius encircling a given fraction of the total image flux.
+    """Find the radius enclosing a fraction of the total image flux.
 
     Parameters
     ----------
-    im : 2D array
-        The PSF or flux image. Assumes total flux is positive and no NaN
-        values.
-    center : tuple
-        The (x, y) center position.
+    im : 2-D array
+        PSF or flux image. Total flux must be positive and contain no NaNs.
+    center : tuple of float
+        Center position in ``(x, y)`` order.
     fraction : float, optional
         The enclosed flux fraction to find the radius for.
         Default is ``0.5``.
@@ -342,11 +343,8 @@ def ee_radius(im, center, fraction=0.5, r_min=0.5, r_max=None, sum_is_unity=Fals
         the minimum image dimension.
         Default is `None`.
     sum_is_unity : bool, optional
-        If `True`, the input image is assumed to be normalized such that its
-        total sum is 1. In this case, `fraction` is treated as the target flux
-        directly. If `False` (default), `fraction` is treated as a fraction of
-        the total image flux, and the target flux is calculated as `fraction *
-        np.sum(im)`.
+        If `True`, treat `fraction` as the target flux and assume `im.sum() == 1`.
+        If `False` (default), use `fraction * np.sum(im)` as the target.
 
     Returns
     -------
@@ -370,23 +368,22 @@ def ee_radius(im, center, fraction=0.5, r_min=0.5, r_max=None, sum_is_unity=Fals
 
 
 def radprof_pix(img, pos, mask=None, rmax=10, sort_dist=False, fitfunc=None, refit=1):
-    """Get radial profile (pixel values) of an object from n-D image.
+    """Get pixel values and optional fits for an object's radial profile.
 
     Parameters
     ----------
-    img : CCDData or ndarray
-        The image to be profiled.
-    pos : array_like
-        The xy coordinates of the center of the object (0-indexing).
+    img : `~astropy.nddata.CCDData` or ndarray
+        Image to profile.
+    pos : array-like
+        Object center in zero-based ``(x, y)`` coordinates.
     mask : array-like or bool, optional
-        Pixels to exclude. May match the full image or broadcast to the local
-        cutout. Pass ``mask=ccd.mask`` explicitly to use a CCDData mask.
+        Pixels to exclude. It may match the full image or broadcast to the
+        local cutout. Pass ``mask=ccd.mask`` explicitly for a CCDData mask.
     rmax : int, optional
-        The maximum radius to be profiled.
-        Default is ``10``.
+        Maximum profile radius. Default is `10`.
     refit : float, None, optional
-        If not None, refit the profile for pixels within max(refit*FWHM, 3). It this exceeds rmax, refit is ignored.
-        Default is ``1``.
+        If not `None`, refit within ``max(refit * FWHM, 3)``. Ignore the
+        refit when this radius exceeds `rmax`. Default is `1`.
 
     Example
     -------

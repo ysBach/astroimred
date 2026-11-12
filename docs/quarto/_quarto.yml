@@ -1,0 +1,177 @@
+project:
+  type: website
+  output-dir: _site
+  render:
+    - "*.qmd"
+    - "tutorials/*.qmd"
+    - "api/*.qmd"
+
+metadata-files:
+  - api/_sidebar.yml
+
+website:
+  title: astroimred
+  site-url: https://ysbach.github.io/astroimred/
+  repo-url: https://github.com/ysBach/astroimred
+  repo-actions: [issue]
+  description: FITS image reduction, file management, and aperture photometry in Python.
+  search: true
+  navbar:
+    left:
+      - href: index.qmd
+        text: Home
+      - href: quickstart.qmd
+        text: Quickstart
+      - text: Tutorials
+        menu:
+          - href: tutorials/index.qmd
+            text: Learning path
+          - href: tutorials/calibrate-images.qmd
+            text: Calibrate images
+          - href: tutorials/combine-images.qmd
+            text: Combine images
+          - href: tutorials/command-line.qmd
+            text: Command-line tools
+          - href: tutorials/aperture-photometry.qmd
+            text: Aperture photometry
+          - href: tutorials/comet-enhancement.qmd
+            text: Comet enhancement
+      - href: api/index.qmd
+        text: API reference
+    right:
+      - icon: github
+        href: https://github.com/ysBach/astroimred
+        aria-label: GitHub source
+  page-footer:
+    left: Documentation follows the main branch.
+    right:
+      - text: imcombiners
+        href: https://ysbach.github.io/imcombiners/
+      - text: astroapers
+        href: https://ysbach.github.io/astroapers/
+
+format:
+  html:
+    theme: cosmo
+    toc: true
+    toc-depth: 3
+    code-copy: true
+    code-overflow: wrap
+    css:
+      - styles.css
+      - api/_styles-quartodoc.css
+
+jupyter: python3
+execute:
+  echo: true
+  error: false
+  cache: false
+  freeze: false
+  daemon: false
+
+quartodoc:
+  package: astroimred
+  parser: numpy
+  source_dir: ../../src
+  dynamic: false
+  rewrite_all_pages: true
+  dir: api
+  sidebar: api/_sidebar.yml
+  css: api/_styles-quartodoc.css
+  options:
+    include_attributes: false
+    include_inherited: false
+  sections:
+    - title: FITS files and headers
+      desc: Read images, select files, and maintain observation metadata.
+      contents:
+        - fitsmgmt.io.load_ccd
+        - fitsmgmt.io.load_ccds
+        - fitsmgmt.io.write2fits
+        - fitsmgmt.io.inputs2list
+        - fitsmgmt.table.fits_summary
+        - fitsmgmt.table.df_selector
+        - fitsmgmt.table.group_fits
+        - fitsmgmt.table.select_fits
+        - fitsmgmt.naming.fits_newpath
+        - fitsmgmt.naming.fitsrenamer
+        - fitsmgmt.header.hedit
+        - fitsmgmt.header.hdrval
+        - fitsmgmt.header.cmt2hdr
+        - fitsmgmt.header.update_process
+        - fitsmgmt.header.midtime_obs
+    - title: Image operations and combination
+      desc: Transform CCDData images and combine calibrated exposures.
+      contents:
+        - imutil.imarith.imarith
+        - imutil.imcopy.imcopy
+        - kind: page
+          path: imutil.imcombine.imcombine
+          contents:
+            - name: imcombine
+              package: astroimred.imutil.imcombine
+              dynamic: true
+        - imutil.imcombine.group_combine
+        - imutil.imcombine.group_save
+        - imutil.ccdops.bin_ccd
+        - imutil.ccdops.imcut
+        - imutil.ccdops.imslice
+        - imutil.ccdops.trim_overlap
+        - imutil.ccdops.propagate_ccdmask
+        - imutil.imstat.errormap
+        - imutil.imstat.give_stats
+        - imutil.pixels.fixpix
+        - imutil.pixels.find_satpix
+    - title: Calibration and cosmic rays
+      desc: Apply calibration frames and identify image defects.
+      contents:
+        - reduction.preproc.biascor
+        - reduction.preproc.darkcor
+        - reduction.preproc.flatcor
+        - reduction.preproc.frincor
+        - reduction.preproc.ccdred
+        - reduction.crrej.crrej
+        - reduction.crrej.medfilt_bpm
+    - title: Photometry and backgrounds
+      desc: Define apertures, estimate sky, refine centers, and measure flux.
+      contents:
+        - phot.aperture.circ_ap_an
+        - phot.aperture.ellip_ap_an
+        - phot.aperture.rect_ap_an
+        - phot.aperture.pill_ap_an
+        - phot.apphot.apphot_annulus
+        - phot.background.sky_fit
+        - phot.background.quick_sky_circ
+        - phot.center.find_centroid
+        - phot.center.find_center_2dg
+        - phot.center.center_sep
+        - phot.radprof.radial_profile
+        - phot.radprof.radcum_profile
+        - phot.radprof.ee_radius
+    - title: Comet image enhancement
+      desc: Reveal coma structure with radial and azimuthal filters.
+      contents:
+        - viz.enhance.enhance_rho
+        - viz.enhance.azimuthal_normalize
+        - viz.enhance.azimuthal_renormalize
+        - viz.enhance.annular_normalize
+        - viz.enhance.NormStats
+        - viz.enhance.EnhancementResult
+        - viz.rvsf.radially_variable_filter
+        - viz.larson.larson_sekanina
+    - title: Coordinates and observing geometry
+      desc: Inspect WCS, derive local transforms, and compute airmass.
+      contents:
+        - fitsmgmt.wcs.center_radec
+        - fitsmgmt.wcs.fov_radius
+        - fitsmgmt.wcs.pixel_scale
+        - fitsmgmt.wcs.local_cd_matrix
+        - fitsmgmt.wcs.make_linear_wcs
+        - fitsmgmt.wcs.make_zoomed_wcs
+        - fitsmgmt.wcs.wcsremove
+        - fitsmgmt.airmass.calc_airmass
+        - fitsmgmt.airmass.airmass_obs
+  renderer:
+    style: _renderer.py
+    display_name: short
+    table_style: description-list

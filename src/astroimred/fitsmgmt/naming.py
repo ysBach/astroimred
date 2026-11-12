@@ -2,8 +2,7 @@
 
 from pathlib import Path
 
-import numpy as np
-from astro_ndslice import slice_from_string
+from astro_ndslice import slicefy
 from astropy.io import fits
 from astropy.nddata import CCDData
 
@@ -156,7 +155,7 @@ def fitsrenamer(
 
     trimsec : `str` or `None`, optional
         FITS-style section string used to trim the image before writing the
-        renamed file. Default is `None`.
+        renamed file. WCS-bearing images require unit steps. Default is `None`.
 
     fillnan : `str`, optional
         The string that will be inserted if the keyword is not found from the
@@ -203,33 +202,30 @@ def fitsrenamer(
     if remove_keys is not None:
         hdr = key_remover(hdr, remove_keys, deepremove=True)
 
-    # TODO: It is necessary to do this bothersome calculations to
-    #   preserve the WCS information that may reside in the FITS (if use
-    #   ``trim_image`` of ccdproc, it will not be preserved).
-    # TODO: Maybe I can put some LTV-like keys to the header, rather
-    #   than this crazy code...? (ysBach 2019-05-09)
     if trimsec is not None:
-        from ..imutil.ccdops import cut_ccd
+        from astropy.wcs import WCS
 
-        slices = slice_from_string(trimsec, fits_convention=True)
-        # initially guess start and stop indices as 0's and from shape in (ny, nx) order
-        ny, nx = data[slices].shape
-        starts = np.array([0, 0])  # yx order
-        stops = np.array([ny, nx])  # yx order
+        from ..imutil.ccdops import imslice
 
-        for i in range(2):
-            if slices[i].start is not None:
-                starts[i] = slices[i].start
-            if slices[i].stop is not None:
-                stops[i] = slices[i].stop
+        w = (
+            WCS(hdr)
+            if any(k.startswith(("CRVAL", "CRPIX", "CD", "PC", "CTYPE")) for k in hdr)
+            else None
+        )
+        if w is not None and any(
+            s.step not in (None, 1) for s in slicefy(trimsec, ndim=data.ndim)
+        ):
+            raise NotImplementedError("WCS-preserving trims require unit steps.")
 
-        cent = np.flip((stops - starts) / 2)  # xy order
-        size = (ny, nx)  # yx order
-        # Make CCDData instance as dummy object
-        _ccd = CCDData(data, header=hdr, unit="adu")
-        _ccd = cut_ccd(_ccd, cent, size)
+        _ccd = imslice(
+            CCDData(data, header=hdr, wcs=w, unit="adu"),
+            trimsec=trimsec,
+            update_header=True,
+        )
         data = _ccd.data
-        hdr = _ccd.header
+        hdr = _ccd.header.copy()
+        if _ccd.wcs is not None:
+            hdr.update(_ccd.wcs.to_header(relax=True))
 
     newhdul = fits.PrimaryHDU(data=data, header=hdr)
 

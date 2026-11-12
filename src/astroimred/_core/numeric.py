@@ -128,46 +128,42 @@ def sigma_clipper(
 def normalize(
     num: float, lower: float = 0, upper: float = 360, b: bool = False
 ) -> float:
-    """Normalize number to range [lower, upper) or [lower, upper].
+    """Normalize a number to a circular or reflected interval.
 
     Parameters
     ----------
     num : float
-        The number to be normalized.
+        Number to normalize.
 
     lower, upper : numeric
-        Lower/upper limit of range. Default: ``0`` and ``360``.
+        Interval limits. Defaults are `0` and `360`.
 
     b : bool
-        Type of normalization. Default is `False`. See notes. When b=True, the
-        range must be symmetric about 0. When b=False, the range must be
-        symmetric about 0 or ``lower`` must be equal to 0.
+        Use reflected (bouncing) normalization when `True`; use circular
+        wrapping when `False` (default). Bouncing requires symmetry about `0`;
+        wrapping requires symmetry about `0` or `lower == 0`.
 
     Returns
     -------
     n : float
-        A number in the range [lower, upper) or [lower, upper].
+        Number in ``[lower, upper)`` when `b=False`, or ``[lower, upper]``
+        when `b=True`.
 
     Raises
     ------
     ValueError
-      If lower >= upper.
+        If `lower >= upper`, or if the bounds do not meet the selected mode's
+        symmetry requirements.
 
     Notes
     -----
     From phn: https://github.com/phn/angles
 
-    If the keyword `b == False`, then the normalization is done in the
-    following way. Consider the numbers to be arranged in a circle, with the
-    lower and upper ends sitting on top of each other. Moving past one limit,
-    takes the number into the beginning of the other end. For example, if range
-    is [0 - 360), then 361 becomes 1 and 360 becomes 0. Negative numbers move
-    from higher to lower numbers. So, -1 normalized to [0 - 360) becomes 359.
-    When b=False range must be symmetric about 0 or lower=0. If the keyword `b
-    == True`, then the given number is considered to "bounce" between the two
-    limits. So, -91 normalized to [-90, 90], becomes -89, instead of 89. In
-    this case the range is [lower, upper]. This code is based on the function
-    `fmt_delta` of `TPM`. When b=True range must be symmetric about 0.
+    With `b=False`, treat the interval as a circle: crossing one bound enters
+    at the other. Thus, in ``[0, 360)``, `361` becomes `1`, `360` becomes `0`,
+    and `-1` becomes `359`. With `b=True`, reflect values between the bounds:
+    `-91` becomes `-89` in ``[-90, 90]``. This code is based on the `fmt_delta`
+    function of `TPM`.
 
     Examples
     --------

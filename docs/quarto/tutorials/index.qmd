@@ -1,0 +1,40 @@
+---
+title: FITS reduction learning path
+description: Read, calibrate, combine, and inspect images using the established astroimred API.
+---
+
+Start with a single FITS image. Add calibration and combination once the
+image's units, header, and mask are understood.
+
+## Choose your next task
+
+| Task | Guide | Expected result |
+| --- | --- | --- |
+| Read an image and inspect its metadata | [FITS quickstart](../quickstart.qmd) | A `CCDData` image and a header summary |
+| Apply supplied calibration frames | [Bias, dark, and flat correction](calibrate-images.qmd) | A calibrated image with a checkable pixel value |
+| Combine calibrated exposures | [Image combination](combine-images.qmd) | One image from a stack of exposures |
+| Work from a terminal | [Command-line tools](command-line.qmd) | Copied, combined, or arithmetically transformed FITS files |
+| Measure a source | [Aperture photometry](aperture-photometry.qmd) | Background-subtracted flux and instrumental magnitude |
+| Inspect coma structure | [Comet enhancement](comet-enhancement.qmd) | Five enhancements of a packaged FITS image |
+
+The Python tutorials use small synthetic inputs or the packaged CometCIEF
+sample. The command-line guide uses
+placeholder FITS paths that you replace with your own files. No tutorial needs
+a telescope archive or a network service.
+
+## Use the reference for individual operations
+
+The existing documentation groups the package into FITS management, image
+operations, preprocessing, and cosmic-ray rejection. The website keeps those
+topics and generates their reference pages from the current source docstrings.
+
+| Existing topic | Website reference |
+| --- | --- |
+| FITS files and headers | [Read images](../api/fitsmgmt.io.load_ccd.qmd) and [build summaries](../api/fitsmgmt.table.fits_summary.qmd) |
+| Image operations | [Copy sections](../api/imutil.imcopy.imcopy.qmd) and [image arithmetic](../api/imutil.imarith.imarith.qmd) |
+| Preprocessing | [Calibration pipeline](../api/reduction.preproc.ccdred.qmd) |
+| Cosmic-ray rejection | [Cosmic-ray removal](../api/reduction.crrej.crrej.qmd) and [bad-pixel detection](../api/reduction.crrej.medfilt_bpm.qmd) |
+
+For instrument data, select calibration masters, masks, rejection parameters,
+and uncertainty treatment explicitly. The examples demonstrate API behavior;
+they do not choose an observing program's calibration policy.

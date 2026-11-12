@@ -137,3 +137,63 @@ class TestSummary:
         assert list(df["file"]) == ["CCDData in fitslist[0]"]
         assert df.iloc[0]["filesize"] is None
         assert list(df["OBJECT"]) == ["M1"]
+
+    def test_select_fits_missing_strings_and_caller_index_immutability(self):
+        """select_fits should handle missing string values without mask error and not mutate caller index."""
+        import pandas as pd
+
+        df = pd.DataFrame(
+            {
+                "file": ["img1.fits", "img2.fits", "img3.fits"],
+                "OBJECT": ["NGC1234", None, "NGC5678"],
+                "EXPTIME": [100.0, 100.0, 200.0],
+            },
+            index=[10, 20, 30],
+        )
+        original_index = df.index.copy()
+
+        matched = table.select_fits(
+            df,
+            type_key="OBJECT",
+            type_val="NGC1.*",
+            path_to_text=True,
+        )
+        assert matched == ["img1.fits"]
+        pd.testing.assert_index_equal(df.index, original_index)
+
+        # Broad regex '.*' must not select missing values (None / pd.NA / NaN)
+        matched_all = table.select_fits(
+            df,
+            type_key="OBJECT",
+            type_val=".*",
+            path_to_text=True,
+        )
+        assert matched_all == ["img1.fits", "img3.fits"]
+
+        # Regex on all-numeric column
+        matched_num = table.select_fits(
+            df,
+            type_key="EXPTIME",
+            type_val="100.*",
+            path_to_text=True,
+        )
+        assert matched_num == ["img1.fits", "img2.fits"]
+
+    def test_select_fits_in_memory_ccddata_list(self):
+        """select_fits should support list of CCDData objects without array coercion issues."""
+        ccd1 = CCDData(
+            np.ones((2, 2)), unit="adu", header={"OBJECT": "M1", "EXPTIME": 10}
+        )
+        ccd2 = CCDData(
+            np.ones((2, 2)), unit="adu", header={"OBJECT": "M2", "EXPTIME": 20}
+        )
+        ccd_list = [ccd1, ccd2]
+
+        matched = table.select_fits(
+            ccd_list,
+            type_key="OBJECT",
+            type_val="M1",
+            prefer_ccddata=True,
+        )
+        assert len(matched) == 1
+        assert matched[0] is ccd1

@@ -1,0 +1,50 @@
+---
+title: Combine calibrated images
+description: Combine CCDData inputs and choose calibration and rejection explicitly.
+---
+
+Use `imcombine` for a FITS-aware combination of exposures. This example uses
+three small `CCDData` images so the result can be checked directly.
+
+## 1. Prepare images with matching units
+
+```{python}
+import numpy as np
+from astropy.nddata import CCDData
+
+from astroimred.imutil.imcombine import imcombine
+
+frames = [
+    CCDData(np.full((16, 16), level, dtype="float32"), unit="adu")
+    for level in (100, 102, 104)
+]
+```
+
+For observed images, load the frames with `air.load_ccd` after applying the
+calibration required by the instrument. Combination does not infer which bias,
+dark, or flat frames belong to an observation.
+
+## 2. Combine and verify the result
+
+```{python}
+combined = imcombine(frames, combine="average")
+np.testing.assert_allclose(combined.data, 102.0)
+combined.shape, float(combined.data.mean())
+```
+
+Use `combine="median"` when the sample median is the desired statistic.
+Choose rejection, zero/scale corrections, and weights for the observation;
+they can change the scientific meaning of the output.
+
+## 3. Select the next operation
+
+| Need | Entry point |
+| --- | --- |
+| Bias, dark, and flat correction | [`ccdred`](../api/reduction.preproc.ccdred.qmd) |
+| Group exposures by header fields | [`group_combine`](../api/imutil.imcombine.group_combine.qmd) |
+| Arithmetic between images | [`imarith`](../api/imutil.imarith.imarith.qmd) |
+| Detailed normalization and rejection controls | [`imcombine`](../api/imutil.imcombine.imcombine.qmd) |
+
+`output_std` describes sample/clipping spread. It is not a propagated
+uncertainty image; explicit input-uncertainty extension requests are currently
+unsupported. Read the API's return values before using diagnostics downstream.

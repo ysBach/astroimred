@@ -41,45 +41,36 @@ def scancor(
     fit_order: int = 1,
     fit_kw: dict | None = None,
 ) -> CCDData:
-    """Do overscan correction
+    """Reserve overscan fitting; currently raises `NotImplementedError`.
 
     Parameters
     ----------
     ccd : `~astropy.nddata.CCDData`
-        The `~astropy.nddata.CCDData` to be corrected.
+        CCD image to correct.
+    overscan : `~numpy.ndarray`, optional
+        Overscan array, for example ``ccd.data[:, :overscan]``. Give exactly one
+        of `overscan` and `scansec`. Default: ``None``.
+    scansec : `str`, optional
+        FITS-style section of the overscan region. Give exactly one of `overscan`
+        and `scansec`. Default: ``None``.
+    scanax : `int` or `None`, optional
+        Axis along which overscan values are combined. Axis numbers use Python
+        order. ``None`` selects the shortest overscan dimension; a square region
+        uses axis 1. Default: ``0``.
+    fit_func : `str`, optional
+        Fitting function name. Default: ``"legendre"``.
+    fit_order : `int`, optional
+        Polynomial order. Default: ``1``.
+    fit_kw : `dict`, optional
+        Keywords for the fitting function. Default: ``None``.
 
-    overscan : `~numpy.ndarray`, optional.
-        The overscan region in `~numpy.ndarray`, e.g., ``ccd.data[:, :overscan]``. One
-        and only one of `overscan` or `scansec` should be given.
-        Default: `None`.
+        The planned preset is ``dict(sigma=(3, 3), maxiters=1, grow=0)``;
+        no fitting is performed by the current implementation.
 
-    scansec : `str`, optional.
-        The section of the overscan region to be used for correction, e.g.,
-        "[1:10, :]" in FITS section format. One and only one of `overscan` or
-        `scansec` should be given.
-        Default: `None`.
-
-    scanax : `int`, `None`, optional.
-        Axis along which overscan should combined with mean or median. Axis
-        numbering follows the *python* convention for ordering, so 0 is the
-        first axis and 1 is the second axis.
-
-        If overscan_axis is explicitly set to `None`, the axis is set to
-        the shortest dimension of the overscan section (or 1 in case
-        of a square overscan).
-        Default is ``0``.
-
-    fit_func : `str`, optional.
-        The fitting function to use for overscan fitting.
-        Default is ``"legendre"``.
-
-    fit_order : `int`, optional.
-        The order of the fitting polynomial.
-        Default is ``1``.
-
-    fit_kw : `dict`, optional.
-        Keyword arguments passed to the fitting function.
-        Default is ``dict(sigma=(3, 3), maxiters=1, grow=0)``.
+    Raises
+    ------
+    NotImplementedError
+        Overscan correction is reserved for a future implementation.
     """
     raise NotImplementedError("scancor is not implemented yet.")
     # if fit_kw is None:
@@ -94,31 +85,27 @@ def biascor(
     copy: bool = True,
     verbose: int = 1,
 ) -> CCDData:
-    """Do bias correction (purpose: helper function of `~astroimred.reduction.preproc.ccdred`)
+    """Subtract a master bias frame.
 
     Parameters
     ----------
     ccd : `~astropy.nddata.CCDData`
-        The `~astropy.nddata.CCDData` to be corrected.
-    mbias : `~astropy.nddata.CCDData`, `~numpy.ndarray`, optional
-        The master calibration (bias) frame.
-        Default: `None`.
+        CCD image to correct.
+    mbias : `~astropy.nddata.CCDData` or `~numpy.ndarray`, optional
+        Master bias frame. Default: ``None``.
     mbiaspath : path-like, optional
-        The path to the master calibration (bias) frame.
-        Default: `None`.
+        Path to the master bias frame. Default: ``None``.
     copy : `bool`, optional
-        Whether to return a copy of the data (`True`) or a reference to the
-        original data (`False`). Using `False` will be slightly faster (few ms
-        order) and memory efficient, but the original data may be modified
-        unintentionally.
-        Default is `True`.
+        Return a copy when ``True``; when ``False``, modify the input in place.
+        The latter is slightly faster and uses less memory. Default: ``True``.
     verbose : `int`, optional
-        Verbosity level for header logging.
+        Header logging level. Default: ``1``.
 
     Returns
     -------
     `~astropy.nddata.CCDData`
-        Bias-corrected CCD.
+        Bias-corrected CCD. When both master inputs are ``None``, this is an
+        unchanged copy or the original object according to ``copy``.
     """
     if mbias is None and mbiaspath is None:
         return ccd.copy() if copy else ccd
@@ -151,43 +138,38 @@ def darkcor(
     copy: bool = True,
     verbose: int = 1,
 ) -> CCDData:
-    """Do dark correction (purpose: helper function of `~astroimred.reduction.preproc.ccdred`)
+    """Subtract a master dark frame, optionally scaled by exposure time.
 
     Parameters
     ----------
     ccd : `~astropy.nddata.CCDData`
-        The `~astropy.nddata.CCDData` to be corrected.
-    mdark : `~astropy.nddata.CCDData`, `~numpy.ndarray`, optional
-        The master calibration (dark) frame.
-        Default: `None`.
+        CCD image to correct.
+    mdark : `~astropy.nddata.CCDData` or `~numpy.ndarray`, optional
+        Master dark frame. Default: ``None``.
     mdarkpath : path-like, optional
-        The path to the master calibration (dark) frame.
-        Default: `None`.
+        Path to the master dark frame. Default: ``None``.
     exptime_key : `str`, optional
-        Header keyword for exposure time. Used only if `dark_scale` is `True`.
+        Header keyword for exposure time. Used only when ``dark_scale=True``.
+        Default: ``"EXPTIME"``.
     exptime_data, exptime_dark : numeric, optional
-        The exposure time of the data and the dark frame in the same unit. If
-        `None`, ``exptime = header.get(exptime_key, 1)`` is used for data and
-        dark, respectively. Otherwise, header information is ignored.
-        Ignored if `dark_scale` is `False`.
-        Default: `None`
+        Exposure times of the data and dark frame in the same unit. If either is
+        ``None``, ``header.get(exptime_key, 1)`` supplies that value; explicit
+        values override the header. Ignored when ``dark_scale=False``. Default:
+        ``None``.
     dark_scale : `bool`, optional
-        Whether to scale dark frame. If `True`,
-        ``scale = exptime_data/exptime_dark`` is multiplied to dark frame.
-        Default: `False`
+        Multiply the dark frame by
+        ``exptime_data / exptime_dark`` before subtraction. Default: ``False``.
     copy : `bool`, optional
-        Whether to return a copy of the data (`True`) or a reference to the
-        original data (`False`). Using `False` will be slightly faster (few ms
-        order) and memory efficient, but the original data may be modified
-        unintentionally.
-        Default is `True`.
+        Return a copy when ``True``; when ``False``, modify the input in place.
+        The latter is slightly faster and uses less memory. Default: ``True``.
     verbose : `int`, optional
-        Verbosity level for header logging.
+        Header logging level. Default: ``1``.
 
     Returns
     -------
     `~astropy.nddata.CCDData`
-        Dark-corrected CCD.
+        Dark-corrected CCD. When both master inputs are ``None``, this is an
+        unchanged copy or the original object according to ``copy``.
     """
 
     if mdark is None and mdarkpath is None:
@@ -249,42 +231,35 @@ def flatcor(
     flat_norm_value: float | None = 1,
     verbose: int = 1,
 ) -> CCDData:
-    """Do flat correction (purpose: helper function of `~astroimred.reduction.preproc.ccdred`)
+    """Divide by a master flat frame.
 
     Parameters
     ----------
     ccd : `~astropy.nddata.CCDData`
-        The `~astropy.nddata.CCDData` to be corrected.
-    mflat : `~astropy.nddata.CCDData`, `~numpy.ndarray`, optional
-        The master calibration (flat) frame.
-        Default: `None`.
+        CCD image to correct.
+    mflat : `~astropy.nddata.CCDData` or `~numpy.ndarray`, optional
+        Master flat frame. Default: ``None``.
     mflatpath : path-like, optional
-        The path to the master calibration (flat) frame.
-        Default: `None`.
-    flat_mask : numeric, `~numpy.ndarray`, `None`, optional
-        Mask to replace bad flat pixels by ``mflat[flat_mask] = flat_fill``. If
-        numeric, ``mflat[mflat < flat_mask] = flat_fill``. Skipped if `None`.
-        Default: ``0``
+        Path to the master flat frame. Default: ``None``.
+    flat_mask : numeric, `~numpy.ndarray`, or `None`, optional
+        Pixels replaced by `flat_fill`. For a numeric value, pixels with
+        ``mflat < flat_mask`` are selected. Skipped when ``None``. Default: ``0``.
     flat_fill : numeric, optional
-        The value to fill the masked pixels.
-        Default: ``1``.
+        Value used for selected flat pixels. Default: ``1``.
     copy : `bool`, optional
-        Whether to return a copy of the data (`True`) or a reference to the
-        original data (`False`). Using `False` will be slightly faster (few ms
-        order) and memory efficient, but the original data may be modified
-        unintentionally.
-        Default is `True`.
-    flat_norm_value : numeric, optional
-        If `None`, normalize the flat by its mean. Otherwise divide the flat by
-        this value before correction.
-        Default: ``1``.
+        Return a copy when ``True``; when ``False``, modify the input in place.
+        The latter is slightly faster and uses less memory. Default: ``True``.
+    flat_norm_value : numeric or `None`, optional
+        If ``None``, divide the flat by its mean; otherwise divide it by this
+        value before correction. Default: ``1``.
     verbose : `int`, optional
-        Verbosity level for header logging.
+        Header logging level. Default: ``1``.
 
     Returns
     -------
     `~astropy.nddata.CCDData`
-        Flat-corrected CCD.
+        Flat-corrected CCD. When both master inputs are ``None``, this is an
+        unchanged copy or the original object according to ``copy``.
     """
     if mflat is None and mflatpath is None:
         return ccd.copy() if copy else ccd
@@ -354,55 +329,46 @@ def frincor(
     copy: bool = True,
     verbose: int = 1,
 ) -> CCDData:
-    """Subtract fringe frame
+    """Subtract a master fringe frame, optionally scaled to the image.
 
     Parameters
     ----------
     ccd : `~astropy.nddata.CCDData`
-        The ccd to processed.
-
-    mfringe : `~astropy.nddata.CCDData`
-        The fringe frame.
-
-    fringe_scale : `int`, `float`, ndarray, function object, ``{"exp", "exposure", "exptime"}``, optional.
-        The scale to be applied to the fringe frame. If numeric or `~numpy.ndarray`, it
-        will directly be multiplied to the fringe before fringe subtraction. If
-        function object, it will be applied to the fringe before fringe
-        subtraction (using `fringe_scale_section`). If "exp", "exposure", or
-        "exptime", the exposure time of the fringe frame will be used. (using
-        either `frin_exposure` or `exptime_key`). If `None`, the fringe
-        will be subtracted without modification.
-        Default: `None`.
-
-    fringe_scale_region : `~numpy.ndarray`(`bool`), `str`, [`list` of] `int`, [`list` of] slice, optional.
-        The mask or FITS-convention section of the fringe and object (science)
-        frames to match the fringe pattern before the subtraction. If `~numpy.ndarray`,
-        it will be forced to be changed into `bool` array. The scale will be
-        ``fringe_scale(object_frame[fringe_scale_region]) /
-        fringe_scale(frin_frame[fringe_scale_region])``.
-        Default: `None`.
-
-    fringe_scale_kw : `dict`, optional.
-        The kwargs that can be passed to `fringe_scale` if it is a function.
-        Default: ``{}``.
-
-    exptime_key : `str`, optional.
-        The header keyword for exposure time. Used only if `fringe_scale` is in
-        ``{"exp", "exposure", "exptime"}``.
-
-    exptime_data, exptime_frin : `None`, numeric, optional.
-        The exposure time of the data and the fringe frame in the same unit. If
-        `None`, ``exptime = header.get(exptime_key, 1)`` is used for data and
-        fringe, respectively. Otherwise, header information is ignored.
-        Used only if when `fringe_scale` is exposure time mode.
-        Default: `None`
-
+        CCD image to correct.
+    mfrin : `~astropy.nddata.CCDData` or `~numpy.ndarray` or `None`
+        Fringe frame, or ``None`` when `mfrinpath` supplies it. Default: ``None``.
+    mfrinpath : path-like, optional
+        Path to the fringe frame. Default: ``None``.
+    fringe_scale : numeric, `~numpy.ndarray`, callable, `str`, or `None`, optional
+        Scale applied before subtraction. A number or array is multiplied
+        directly. A callable receives ``image[fringe_scale_region] /
+        fringe[fringe_scale_region]`` and `fringe_scale_kw`. ``"exp"``,
+        ``"exposure"``, and ``"exptime"`` use exposure times. ``None`` leaves
+        the fringe unchanged. Default: ``None``.
+    fringe_scale_region : `~numpy.ndarray` or `str`, optional
+        Boolean mask or FITS-style section used to estimate a callable scale. An
+        array is converted to boolean. Default: ``None`` (use all pixels).
+    fringe_scale_kw : `dict`, optional
+        Keywords passed to a callable `fringe_scale`. Default: ``None`` (treated
+        as ``{}``).
+    exptime_key : `str`, optional
+        Header keyword for exposure time. Used only for exposure scaling.
+        Default: ``"EXPTIME"``.
+    exptime_data, exptime_frin : numeric or `None`, optional
+        Exposure times of the data and fringe frame in the same unit. Missing
+        values use ``header.get(exptime_key, 1)``. Used only for exposure scaling.
+        Default: ``None``.
     copy : `bool`, optional
-        Whether to return a copy of the data (`True`) or a reference to the
-        original data (`False`). Using `False` will be slightly faster (few ms
-        order) and memory efficient, but the original data may be modified
-        unintentionally.
-        Default is `True`.
+        Return a copy when ``True``; when ``False``, modify the input in place.
+        The latter is slightly faster and uses less memory. Default: ``True``.
+    verbose : `int`, optional
+        Header logging level. Default: ``1``.
+
+    Returns
+    -------
+    `~astropy.nddata.CCDData`
+        Fringe-corrected CCD. When both fringe inputs are ``None``, this is an
+        unchanged copy or the original object according to ``copy``.
     """
     if mfrin is None and mfrinpath is None:
         return ccd.copy() if copy else ccd
@@ -547,159 +513,116 @@ def ccdred(
     overwrite: bool = True,
     dtype: str = "float32",
 ) -> CCDData:
-    """Do basic CCD reduction.
+    """Run the basic CCD calibration sequence.
+
+    The operations run in this order when their master frame is supplied:
+    trim, bias subtraction, dark subtraction, fringe subtraction (before or after
+    flat correction according to `fringe_flat_fielded`), flat correction, and
+    optional cosmic-ray rejection. Pixel limits and output dtype are applied last.
 
     Parameters
     ----------
-    ccd : `~astropy.nddata.CCDData`-like (e.g., `~astropy.io.fits.PrimaryHDU`, `~astropy.io.fits.ImageHDU`, `~astropy.io.fits.HDUList`), `~numpy.ndarray`, path-like, or number-like
-        The ccd to be processed.
+    ccd : FITS-like
+        CCDData, FITS HDU, array, path, or number accepted by ``_parse_image``.
+    output : path-like or `None`, optional
+        Save the reduced CCD to this path. Default: ``None``.
+    extension : extension selector, optional
+        FITS extension passed to ``_parse_image``. Default: ``None``.
+    trimsec : `str` or `None`, optional
+        FITS-style section applied to the science and supplied calibration frames.
+        Default: ``None``.
+    mbiaspath, mdarkpath, mflatpath, mfrinpath : path-like or `None`, optional
+        Paths to master bias, dark, flat, and fringe frames. A corresponding
+        ``m*`` object takes precedence when both are supplied; the path is still
+        recorded in the output header. Defaults: ``None``.
+    mbias, mdark, mflat, mfrin : `~astropy.nddata.CCDData` or `None`, optional
+        In-memory master calibration frames. Defaults: ``None``.
+    fringe_flat_fielded : `bool`, optional
+        If ``True``, subtract the fringe after flat correction. If ``False``,
+        subtract it before flat correction. Default: ``True``.
+    fringe_scale : numeric, `~numpy.ndarray`, callable, `str`, or `None`, optional
+        Fringe scaling passed to ``frincor``. Exposure modes are
+        ``"exp"``, ``"exposure"``, and ``"exptime"``. Default: ``None``.
+    fringe_scale_region : `~numpy.ndarray` or `str`, optional
+        Mask or FITS-style section used by a callable fringe scale. Default:
+        ``None``.
+    fringe_scale_kw : `dict` or `None`, optional
+        Keywords passed to a callable fringe scale. Default: ``None``.
+    gain, rdnoise : numeric or `~astropy.units.Quantity`, optional
+        Detector gain and read noise used only for cosmic-ray rejection. Values
+        without units use `gain_unit` and `rdnoise_unit`. Defaults: `1` and `0`.
+    gain_key, rdnoise_key : `str`, optional
+        Header keywords used when `gain` or `rdnoise` is not supplied. Defaults:
+        ``"GAIN"`` and ``"RDNOISE"``.
+    gain_unit, rdnoise_unit : `~astropy.units.Unit`, optional
+        Units for header or explicit gain and read-noise values. Defaults:
+        ``u.electron / u.adu`` and ``u.electron``.
+    exptime_key : `str`, optional
+        Header keyword used for dark/fringe exposure scaling. Default:
+        ``"EXPTIME"``.
+    exptime_frin, exptime_dark, exptime_data : numeric or `None`, optional
+        Explicit fringe, dark, and science exposure times. Missing values are
+        read from `exptime_key` when the relevant scaling is enabled. Defaults:
+        ``None``.
+    dark_scale : `bool`, optional
+        Scale the dark by ``exptime_data / exptime_dark`` before subtraction.
+        Default: ``False``.
+    pixel_min, pixel_max : numeric or `None`, optional
+        Replace science values below/above the limit with `pixel_min_fill`/
+        `pixel_max_fill`. Defaults: ``None``.
+    pixel_min_fill, pixel_max_fill : numeric, optional
+        Replacement values for the pixel limits. Defaults: ``0`` and ``65535``.
+    flat_mask : numeric or `~numpy.ndarray`, optional
+        Flat pixels selected by this threshold or mask are replaced with
+        `flat_fill`. Default: ``0``.
+    flat_fill : numeric, optional
+        Replacement value for selected flat pixels. Default: ``1``.
+    flat_norm_value : numeric or `None`, optional
+        Divide the flat by this value before correction. ``None`` uses its mean.
+        Default: ``1``.
+    do_crrej : `bool`, optional
+        Run ``crrej`` after bias, dark, and flat processing. Default: ``False``.
+    crrej_kw : `dict` or `None`, optional
+        Keyword arguments passed to ``crrej``. ``None`` uses the package's
+        L.A. Cosmic defaults and logs a warning. Default: ``None``.
 
-    output : path-like or `None`, optional.
-        The path if you want to save the resulting `ccd` object.
-        Default: `None`.
-
-    extension : `int`, `str`, or `None`, optional.
-        The extension of the FITS file to be processed. If `None`, the first
-        extension is used. Default: `None`.
-
-    trimsec: `str`, optional.
-        Region of `ccd` to be trimmed; see `~ccdproc.subtract_overscan` for
-        details. Default is `None`.
-
-    mbiaspath, mdarkpath, mflatpath, mfrinpath : path-like, optional.
-        The path to master bias, dark, flat, and fringe FITS files. If `None`,
-        the corresponding process is not done. These can be provided in
-        addition to `mbias`, `mdark`, `mflat`, and/or `mfrin`.
-
-    mbias, mdark, mflat, mfrin : `~astropy.nddata.CCDData`, optional.
-        The master bias, dark, and flat in `~astropy.nddata.CCDData`. If this
-        is given, the files provided by `mbiaspath`, `mdarkpath`, `mflatpath`
-        and/or `mfrin` are **not** loaded, but these paths will be used for
-        header (``BIASFRM``, ``DARKFRM``, ``FLATFRM`` and/or ``FRINFRM``). If
-        the paths are not given, ``xxxxFRM`` will be ``<User>``.
-
-    fringe_scale : `int`, `float`, ndarray, function object, ``{"exp", "exposure", "exptime"}``, optional.
-        The scale to be applied to the fringe frame. If numeric or `~numpy.ndarray`, it
-        will directly be multiplied to the fringe before fringe subtraction. If
-        function object, it will be applied to the fringe before fringe
-        subtraction (using `fringe_scale_section`). If "exp", "exposure", or
-        "exptime", the exposure time of the fringe frame will be used. (using
-        either `exptime_frin` or `exptime_key`). If `None`, the fringe
-        will be subtracted without modification.
-        Default: `None`.
-
-    fringe_scale_region : `~numpy.ndarray`(`bool`), `str`, optional.
-        The mask or FITS-convention section of the fringe and object (science)
-        frames to match the fringe pattern before the subtraction. If `~numpy.ndarray`,
-        it will be forced to be changed into `bool` array. The scale will be
-        ``fringe_scale(object_frame[fringe_scale_region]) /
-        fringe_scale(fringe_frame[fringe_scale_region])``.
-        Default: `None`.
-
-    fringe_scale_kw : `dict`, optional.
-        The kwargs that can be passed to `fringe_scale` if it is a function.
-
-    fringe_flat_fielded : `bool`, optional.
-        Whether the fringe frame is flat-fielded. If `True`, fringe is
-        subtracted AFTER flat-fielding the input frame. Otherwise (default),
-        fringe is subtracted BEFORE flat-fielding the input frame.
-
-    calc_err : `bool`, optional.
-        Whether to calculate the error map based on Poisson and readnoise error
-        propagation.
-
-        .. note::
-            Currently it's encouraged to make error-map manually, as the API is
-            not stable.
-
-    unit : `~astropy.units.Unit` or `str`, optional.
-        The units of the data.
-        Default is `None`.
-
-    gain, rdnoise : `None`, `float`, astropy.`~astropy.units.Quantity`, optional.
-        The gain and readnoise value. These are not used if `do_crrej` is
-        `False`. If `gain` or `readnoise` is specified, they are interpreted
-        with `gain_unit` and `rdnoise_unit`, respectively. If they are not
-        specified, this function will seek for the header with keywords of
-        `gain_key` and `rdnoise_key`, and interprete the header value in the
-        unit of `gain_unit` and `rdnoise_unit`, respectively.
-
-    gain_key, rdnoise_key : `str`, optional.
-        See `gain`, `rdnoise` explanation above.
-        These are not used if ``do_crrej=False``.
-
-    gain_unit, rdnoise_unit : `str`, astropy.`~astropy.units.Unit`, optional.
-        See `gain`, `rdnoise` explanation above.
-        These are not used if ``do_crrej=False``.
-
-    dark_exposure, data_exposure : `None`, `float`, astropy `~astropy.units.Quantity`, optional.
-        The exposure times of dark and data frame, respectively. They should
-        both be specified or both `None`. These are not used if
-        ``mdarkpath=None``. If both are not specified while `mdarkpath` is
-        given, then the code automatically seeks for header's `exposure_key`.
-        Then interprete the value as the quantity with unit `exposure_unit`. If
-        `mdkarpath` is not `None`, then these are passed to
-        `~ccdproc.subtract_dark`.
-
-    exposure_key : `str`, optional.
-        The header keyword for exposure time.
-
-    exposure_unit : astropy `~astropy.units.Unit`, optional.
-        The unit of the exposure time.
-        Used in `~ccdproc.subtract_dark`.
-
-    normalize_exposure : `bool`, optional.
-        Whether to normalize the values by the exposure time of each frame.
-        Maybe useful for long exposure darks to make 1-sec darks.
-        Default is `False`.
-
-    normalize_average, normalize_median : `bool`, optional.
-        Whether to normalize the values by the average or median value of each
-        frame before combining. Only up to one of these must be `True`. Maybe
-        useful for flat.
-        Default is `False`.
-
-    flat_min_value : `float` or `None`, optional.
-        min_value of `ccdproc.flat_correct`. Minimum value for flat field. The
-        value can either be `None` and no minimum value is applied to the flat or
-        specified by a `float` which will replace all values in the flat by the
-        min_value.
-        Default is `None`.
-
-    flat_norm_value : `float` or `None`, optional.
-        The norm_value of `ccdproc.flat_correct`. If `None`, the flat is
-        internally normalized by its mean before the flat correction, i.e., the
-        flat correction will be like ``image/flat*mean(flat)``.
-        If not `None`, the flat correction will be like
-        ``image/flat*flat_norm_value``. Default is 1 (**different** from
-        `ccdproc` which uses `None` as default).
-
-    crrej_kwargs : `dict` or `None`, optional.
-        If `None` (default), uses some default values (see `crrej`). It is
-        always discouraged to use default except for quick validity-checking,
-        because even the official L.A. Cosmic codes in different versions
-        (IRAF, IDL, Python, etc) have different default parameters, i.e., there
-        is nothing which can be regarded as *the default*. To see all possible
-        keywords, do ``print(astroscrappy.detect_cosmics.__doc__)`` Also refer
-        to
+        Choose parameters for the data; defaults are suitable only for a quick
+        check and differ across IRAF, IDL, and Python implementations. Inspect
+        ``astroscrappy.detect_cosmics.__doc__`` for available options, or see
         https://nbviewer.jupyter.org/github/ysbach/AO2019/blob/master/Notebooks/07-Cosmic_Ray_Rejection.ipynb
-
-    propagate_crmask : `bool`, optional.
-        Whether to save (propagate) the mask from CR rejection (`astroscrappy`)
-        to the CCD's mask. Default is `False`.
-
-    output_verify : `str`
-        Output verification option.  Must be one of ``"fix"``, ``"silentfix"``,
-        ``"ignore"``, ``"warn"``, or ``"exception"``. May also be any
-        combination of ``"fix"`` or ``"silentfix"`` with ``"+ignore"``,
-        ``+warn``, or ``+exception" (e.g. ``"fix+warn"``).  See the astropy
-        documentation below:
+    propagate_crmask : `bool`, optional
+        Add the cosmic-ray mask to the CCD mask. Default: ``False``.
+    verbose_crrej : `bool`, optional
+        Enable cosmic-ray rejection logging. Default: ``False``.
+    verbose_bdf : `int`, optional
+        Verbosity for bias, dark, flat, fringe, and output logging. Default: ``1``.
+    output_verify : `str`, optional
+        FITS verification mode: ``"fix"``, ``"silentfix"``, ``"ignore"``,
+        ``"warn"``, or ``"exception"``. Combine ``"fix"`` or ``"silentfix"``
+        with ``"+ignore"``, ``"+warn"``, or ``"+exception"`` as needed, for
+        example ``"fix+warn"``. Default: ``"fix"``. See
         http://docs.astropy.org/en/stable/io/fits/api/verification.html#verify
+    overwrite : `bool`, optional
+        Overwrite `output` when it exists. Default: ``True``.
+    dtype : dtype-like, optional
+        Output data type. Default: ``"float32"``.
 
-    dtype : `str` or `numpy.dtype` or `None`, optional.
-        Allows user to set dtype. See `numpy.array` `dtype` parameter
-        description. If `None` it uses ``np.float64``.
-        Default is `None`.
+    Returns
+    -------
+    `~astropy.nddata.CCDData`
+        Reduced CCD. The input is copied before processing.
+
+    Notes
+    -----
+    Existing uncertainty attributes on input and calibration frames are ignored.
+
+    The old names `calc_err`, `unit`, `dark_exposure`, `data_exposure`,
+    `exposure_key`, `exposure_unit`, `normalize_exposure`, `normalize_average`,
+    `normalize_median`, `flat_min_value`, and `crrej_kwargs` are not parameters of
+    this API. Use `exptime_dark`, `exptime_data`, and `exptime_key` for available
+    exposure scaling, `flat_norm_value` for flat normalization, and `crrej_kw` for
+    cosmic-ray options. Supply units on the input `CCDData`; no separate `unit`
+    argument is accepted.
     """
 
     # This reduction process will ignore `uncertainty` attribute of all

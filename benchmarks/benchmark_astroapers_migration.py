@@ -29,7 +29,7 @@ from photutils.aperture import (
     aperture_photometry,
 )
 
-from astroimred.phot._aper_backend import photometer
+from astroimred.phot import photometer
 from astroimred.phot.background import _sky_fit, annul2values, sky_fit
 
 

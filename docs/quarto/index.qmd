@@ -1,0 +1,49 @@
+---
+title: astroimred
+subtitle: Read FITS files, combine exposures, and measure sources.
+---
+
+Start with the [FITS quickstart](quickstart.qmd), then follow the
+[reduction learning path](tutorials/index.qmd). The examples start with
+synthetic images before introducing observation files.
+
+`astroimred` connects FITS file management, image reduction, and photometry
+through Astropy `CCDData`. Array combination uses
+[imcombiners](https://ysbach.github.io/imcombiners/); pixel-aperture geometry uses
+[astroapers](https://ysbach.github.io/astroapers/).
+
+::: {.task-links}
+| Your task | Start here |
+| --- | --- |
+| Read and inspect FITS files | [Quickstart](quickstart.qmd) |
+| Apply bias, dark, and flat masters | [Calibration](tutorials/calibrate-images.qmd) |
+| Combine calibrated exposures | [Image combination](tutorials/combine-images.qmd) |
+| Process FITS files from a terminal | [Command-line tools](tutorials/command-line.qmd) |
+| Find arguments and return values | [API reference](api/index.qmd) |
+:::
+
+Continue to [aperture photometry](tutorials/aperture-photometry.qmd) when
+your images are ready for source measurements.
+
+## Install
+
+Use Python 3.11 or newer. Install the full extra for all examples on this site:
+
+```bash
+uv pip install "astroimred[full]"
+```
+
+```python
+import astroimred as air
+```
+
+The API reference uses canonical module paths. Convenience imports such as
+`air.load_ccd` and `air.fits_summary` remain useful for short scripts.
+
+## Version and source
+
+This site is rebuilt from the repository's `main` branch. It may describe
+changes that have not reached PyPI. Consult the
+[changelog](https://github.com/ysBach/astroimred/blob/main/CHANGELOG.md) and
+[release guide](https://github.com/ysBach/astroimred/blob/main/RELEASING.md)
+when matching documentation to an installed version.
