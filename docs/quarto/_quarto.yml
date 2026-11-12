@@ -1,3 +1,18 @@
+filters:
+  - _filters/api-links.lua
+
+api-links:
+  aliases:
+    air: astroimred
+  reexports:
+    astroimred.fits_summary: astroimred.fitsmgmt.table.fits_summary
+    astroimred.load_ccd: astroimred.fitsmgmt.io.load_ccd
+    astroimred.phot.radial_profile: astroimred.phot.radprof.radial_profile
+    astroimred.phot.sky_fit: astroimred.phot.background.sky_fit
+    astroimred.phot.mmm_dao: astroimred.phot.background.mmm_dao
+    astroimred.viz.azimuthal_normalize: astroimred.viz.enhance.azimuthal_normalize
+    astroimred.wcsremove: astroimred.fitsmgmt.wcs.wcsremove
+
 project:
   type: website
   output-dir: _site
@@ -141,6 +156,7 @@ quartodoc:
         - phot.aperture.pill_ap_an
         - phot.apphot.apphot_annulus
         - phot.background.sky_fit
+        - phot.background.mmm_dao
         - phot.background.quick_sky_circ
         - phot.center.find_centroid
         - phot.center.find_center_2dg

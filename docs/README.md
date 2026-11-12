@@ -124,6 +124,18 @@ use static inspection; `imcombine` needs a module import because its docstring
 is assembled at runtime. API pages, search data, figures, and HTML are generated
 and ignored by Git.
 
+### Link to package APIs
+
+Put API names in inline code, preferably with their import path or call
+parentheses, for example `air.load_ccd()`. The website links matching names
+to the current API reference. Use a Sphinx Python role in a shared docstring
+when a name needs an explicit target, such as
+`` :func:`~astroimred.fitsmgmt.io.load_ccd` ``. In Quarto prose, keep a local
+receiver name with an explicit target, for example
+`` `loader(...)`{api-target="astroimred.fitsmgmt.io.load_ccd"} ``. Verify that
+each target is included in the API reference. Keep runnable examples in code
+blocks.
+
 ### Check the rendered output
 
 `make docs-api` also converts legacy RST math, notes, warnings, and code

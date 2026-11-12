@@ -136,8 +136,8 @@ def larson_sekanina(
 
     See Also
     --------
-    radially_variable_filter : Filter with a radius-dependent spatial width.
-    azimuthal_normalize : Divide by an estimated azimuthal brightness level.
+    :func:`~astroimred.viz.rvsf.radially_variable_filter` : Filter with a radius-dependent spatial width.
+    :func:`~astroimred.viz.enhance.azimuthal_normalize` : Divide by an estimated azimuthal brightness level.
 
     References
     ----------
