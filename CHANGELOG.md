@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.4.0 - 2026-11-12
 
 - `enhance_rho` only corrected `1/rho`; `power=-2` now uses mean `rho**2`,
   while default `power=-1` preserves finite results. Overflow now gives `NaN`.
