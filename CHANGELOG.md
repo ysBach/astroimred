@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.4.1 - Unreleased
+## 0.4.1 - 2026-11-12
 
 Includes every 0.4.0 change and the comet enhancement work. Module names are relative to `astroimred`.
 
